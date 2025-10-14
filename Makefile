@@ -6,7 +6,7 @@
 # ============================================================================
 
 # AD HAT driver location (now in organized highz directory)
-ADHAT_DIR = /home/peterson/highz/High_Precision_AD_HAT/c
+ADHAT_DIR = /home/peterson/highz/High-Precision_AD_HAT/c
 
 # Source directories
 SRC_CALIB = src/calibration

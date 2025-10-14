@@ -54,12 +54,12 @@ Real-time data acquisition from the filterbank spectrometer.
 ## Dependencies
 
 ### Required Repositories
-This project depends on the `High_Precision_AD_HAT` driver library:
+This project depends on the `High-Precision_AD_HAT` driver library:
 ```bash
 # Both repositories should be in the highz directory:
 /home/peterson/highz/
-├── highz-filterbank/        # This repository
-└── High_Precision_AD_HAT/   # AD HAT driver (dependency)
+├── highz-filterbank/         # This repository
+└── High-Precision_AD_HAT/    # AD HAT driver (dependency)
 ```
 
 ### Required Libraries
@@ -85,6 +85,10 @@ This project uses a Makefile for easy compilation. The Makefile automatically lo
 git clone https://github.com/alhosani-abdulla/highz-filterbank.git
 cd highz-filterbank
 
+# Ensure the AD HAT driver repository is also cloned in the parent highz directory
+# cd ../
+# git clone https://github.com/alhosani-abdulla/High-Precision_AD_HAT.git
+
 # Build everything
 make
 
@@ -108,22 +112,22 @@ If you need to compile manually without the Makefile:
 ```bash
 # Calibration program
 gcc -o src/calibration/calib src/calibration/calibCode_v2.c \
-    ../High_Precision_AD_HAT/c/lib/Driver/ADS1263.c \
-    ../High_Precision_AD_HAT/c/lib/Config/DEV_Config.c \
-    ../High_Precision_AD_HAT/c/lib/Config/RPI_sysfs_gpio.c \
-    ../High_Precision_AD_HAT/c/lib/Config/dev_hardware_SPI.c \
-    -I../High_Precision_AD_HAT/c/lib/Driver \
-    -I../High_Precision_AD_HAT/c/lib/Config \
+    ../High-Precision_AD_HAT/c/lib/Driver/ADS1263.c \
+    ../High-Precision_AD_HAT/c/lib/Config/DEV_Config.c \
+    ../High-Precision_AD_HAT/c/lib/Config/RPI_sysfs_gpio.c \
+    ../High-Precision_AD_HAT/c/lib/Config/dev_hardware_SPI.c \
+    -I../High-Precision_AD_HAT/c/lib/Driver \
+    -I../High-Precision_AD_HAT/c/lib/Config \
     -lgpiod -lcfitsio -lpigpio -lrt -lpthread -lm
 
 # Data acquisition program
 gcc -o src/data_aquisition/acq src/data_aquisition/ADHAT_c_subroutine_NO_SOCKET.c \
-    ../High_Precision_AD_HAT/c/lib/Driver/ADS1263.c \
-    ../High_Precision_AD_HAT/c/lib/Config/DEV_Config.c \
-    ../High_Precision_AD_HAT/c/lib/Config/RPI_sysfs_gpio.c \
-    ../High_Precision_AD_HAT/c/lib/Config/dev_hardware_SPI.c \
-    -I../High_Precision_AD_HAT/c/lib/Driver \
-    -I../High_Precision_AD_HAT/c/lib/Config \
+    ../High-Precision_AD_HAT/c/lib/Driver/ADS1263.c \
+    ../High-Precision_AD_HAT/c/lib/Config/DEV_Config.c \
+    ../High-Precision_AD_HAT/c/lib/Config/RPI_sysfs_gpio.c \
+    ../High-Precision_AD_HAT/c/lib/Config/dev_hardware_SPI.c \
+    -I../High-Precision_AD_HAT/c/lib/Driver \
+    -I../High-Precision_AD_HAT/c/lib/Config \
     -lgpiod -lcfitsio -lpigpio -lrt -lpthread -lm
 ```
 

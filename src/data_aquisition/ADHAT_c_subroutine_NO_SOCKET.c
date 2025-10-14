@@ -21,7 +21,7 @@
 #include <pigpio.h>   // Raspberry Pi GPIO control
 
 /* Custom Hardware Driver - Updated path for organized highz directory structure */
-#include "/home/peterson/highz/High_Precision_AD_HAT/c/lib/Driver/ADS1263.h"  // AD HAT driver
+#include "/home/peterson/highz/High-Precision_AD_HAT/c/lib/Driver/ADS1263.h"  // AD HAT driver
 
 /* ============= Types and Constants ============= */
 

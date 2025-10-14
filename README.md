@@ -2,6 +2,18 @@
 
 Multi-channel filterbank spectrometer system designed to detect the global 21-cm hydrogen line signal from the Cosmic Dawn and Epoch of Reionization. The system uses an array of cavity filters to simultaneously capture multiple frequency channels, enabling the detection of the cosmological 21-cm absorption trough signature.
 
+## Repository Structure
+
+```
+highz-filterbank/
+├── README.md           # This file
+├── LICENSE             # MIT License
+├── .gitignore          # Git ignore rules
+└── src/                # Source code
+    ├── calibration/       # Calibration routines
+    └── data_aquisition/   # Data acquisition modules
+```
+
 ## Overview
 
 The filterbank spectrometer runs on Raspberry Pi and provides:
@@ -19,15 +31,15 @@ The system consists of:
 - Calibration software for channel characterization
 - Data processing pipeline for signal extraction
 
-## Modules
+## Source Modules
 
-### Calibration
+### Calibration (`src/calibration/`)
 Contains calibration routines for characterizing filterbank channels and system response.
 
 **Files:**
 - `calibCode_v2.c` - Channel calibration and characterization
 
-### Data Acquisition  
+### Data Acquisition (`src/data_aquisition/`)
 Real-time data acquisition from the filterbank spectrometer.
 
 **Files:**
@@ -47,23 +59,23 @@ git clone https://github.com/alhosani-abdulla/highz-filterbank.git
 cd highz-filterbank
 
 # Compile calibration code
-gcc -o calibration/calib calibration/calibCode_v2.c -lm
+gcc -o src/calibration/calib src/calibration/calibCode_v2.c -lm
 
 # Compile data acquisition
-gcc -o data_aquisition/acq data_aquisition/ADHAT_c_subroutine_NO_SOCKET.c -lm
+gcc -o src/data_aquisition/acq src/data_aquisition/ADHAT_c_subroutine_NO_SOCKET.c -lm
 ```
 
 ## Usage
 
 ### Calibration
 ```bash
-cd calibration
+cd src/calibration
 ./calib [options]
 ```
 
 ### Data Acquisition
 ```bash
-cd data_aquisition
+cd src/data_aquisition
 ./acq [options]
 ```
 

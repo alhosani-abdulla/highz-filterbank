@@ -7,8 +7,8 @@
 #include <time.h>
 #include <pigpio.h>
 
-// Your includes
-#include "/home/peterson/High-Pricision_AD_HAT_1/c/lib/Driver/ADS1263.h"
+// AD HAT driver (now in organized highz directory structure)
+#include "/home/peterson/highz/High_Precision_AD_HAT/c/lib/Driver/ADS1263.h"
 
 // Types and constants
 #define ChannelNumber 7

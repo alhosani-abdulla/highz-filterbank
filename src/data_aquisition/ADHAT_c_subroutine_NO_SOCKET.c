@@ -20,8 +20,8 @@
 #include <fitsio.h>   // FITS file format handling
 #include <pigpio.h>   // Raspberry Pi GPIO control
 
-/* Custom Hardware Driver */
-#include "/home/peterson/High-Pricision_AD_HAT_1/c/lib/Driver/ADS1263.h"  // AD HAT driver
+/* Custom Hardware Driver - Updated path for organized highz directory structure */
+#include "/home/peterson/highz/High_Precision_AD_HAT/c/lib/Driver/ADS1263.h"  // AD HAT driver
 
 /* ============= Types and Constants ============= */
 

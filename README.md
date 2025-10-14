@@ -51,32 +51,94 @@ Real-time data acquisition from the filterbank spectrometer.
 - Custom filterbank hardware with cavity filters
 - ADC interface for signal digitization
 
-## Installation
+## Dependencies
+
+### Required Repositories
+This project depends on the `High_Precision_AD_HAT` driver library:
+```bash
+# Both repositories should be in the highz directory:
+/home/peterson/highz/
+├── highz-filterbank/        # This repository
+└── High_Precision_AD_HAT/   # AD HAT driver (dependency)
+```
+
+### Required Libraries
+- **libpigpio** - Raspberry Pi GPIO control
+- **libcfitsio** - FITS file format handling
+- **libgpiod** - GPIO device interface
+- Standard libraries: pthread, rt, math
+
+Install on Raspberry Pi:
+```bash
+sudo apt-get update
+sudo apt-get install libcfitsio-dev libgpiod-dev pigpio
+```
+
+## Building
+
+This project uses a Makefile for easy compilation. The Makefile automatically locates the AD HAT driver in the parent `highz` directory.
+
+### Quick Build
 
 ```bash
 # Clone the repository
 git clone https://github.com/alhosani-abdulla/highz-filterbank.git
 cd highz-filterbank
 
-# Compile calibration code
-gcc -o src/calibration/calib src/calibration/calibCode_v2.c -lm
+# Build everything
+make
 
-# Compile data acquisition
-gcc -o src/data_aquisition/acq src/data_aquisition/ADHAT_c_subroutine_NO_SOCKET.c -lm
+# Or build individual targets:
+make calib      # Build calibration program only
+make acq        # Build data acquisition program only
+make clean      # Remove compiled binaries
+```
+
+### Build Targets
+
+- `make` or `make all` - Build both calibration and data acquisition programs
+- `make calib` - Build calibration program (`src/calibration/calib`)
+- `make acq` - Build data acquisition program (`src/data_aquisition/acq`)
+- `make clean` - Remove compiled binaries
+
+### Manual Compilation (if needed)
+
+If you need to compile manually without the Makefile:
+
+```bash
+# Calibration program
+gcc -o src/calibration/calib src/calibration/calibCode_v2.c \
+    ../High_Precision_AD_HAT/c/lib/Driver/ADS1263.c \
+    ../High_Precision_AD_HAT/c/lib/Config/DEV_Config.c \
+    ../High_Precision_AD_HAT/c/lib/Config/RPI_sysfs_gpio.c \
+    ../High_Precision_AD_HAT/c/lib/Config/dev_hardware_SPI.c \
+    -I../High_Precision_AD_HAT/c/lib/Driver \
+    -I../High_Precision_AD_HAT/c/lib/Config \
+    -lgpiod -lcfitsio -lpigpio -lrt -lpthread -lm
+
+# Data acquisition program
+gcc -o src/data_aquisition/acq src/data_aquisition/ADHAT_c_subroutine_NO_SOCKET.c \
+    ../High_Precision_AD_HAT/c/lib/Driver/ADS1263.c \
+    ../High_Precision_AD_HAT/c/lib/Config/DEV_Config.c \
+    ../High_Precision_AD_HAT/c/lib/Config/RPI_sysfs_gpio.c \
+    ../High_Precision_AD_HAT/c/lib/Config/dev_hardware_SPI.c \
+    -I../High_Precision_AD_HAT/c/lib/Driver \
+    -I../High_Precision_AD_HAT/c/lib/Config \
+    -lgpiod -lcfitsio -lpigpio -lrt -lpthread -lm
 ```
 
 ## Usage
 
 ### Calibration
 ```bash
-cd src/calibration
-./calib [options]
+# Run calibration
+./src/calibration/calib [options]
 ```
 
 ### Data Acquisition
 ```bash
-cd src/data_aquisition
-./acq [options]
+# Run data acquisition
+./src/data_aquisition/acq [options]
 ```
 
 ## Scientific Background

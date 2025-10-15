@@ -50,9 +50,9 @@ $(BIN_DIR):
 	@mkdir -p $(BIN_DIR)
 	@echo "Created bin directory"
 
-# Calibration program
-$(CALIB_TARGET): $(SRC_CALIB)/calibCode_v2.c $(ADHAT_SOURCES)
-	@echo "Compiling calibration program..."
+# Calibration program (filter sweep)
+$(CALIB_TARGET): $(SRC_CALIB)/filterSweep.c $(ADHAT_SOURCES)
+	@echo "Compiling filter sweep calibration program..."
 	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 	@echo "✓ Calibration binary created: $(CALIB_TARGET)"
 

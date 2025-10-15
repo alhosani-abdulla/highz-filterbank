@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
-#include <pthread.h>
+#include <unistd.h>
 #include <fitsio.h>
 #include <time.h>
 #include <pigpio.h>
@@ -13,7 +13,12 @@
 // Types and constants
 #define ChannelNumber 7
 
-double LO_FREQ = 902.4;             //code architecture immediately increments
+// Filter sweep Band B: 900-960 MHz, 0.2 MHz step (matches SweepFilter.ino)
+double LO_FREQ = 900.0;             // Start frequency for Band B
+const double FREQ_MIN = 900.0;
+const double FREQ_MAX = 960.0;
+const double FREQ_STEP = 0.2;
+const int TOTAL_STEPS = 301;        // (960.0 - 900.0) / 0.2 + 1 = 301 measurements per sweep
 
 typedef struct {
     UDOUBLE ADHAT_1[ChannelNumber];
@@ -30,24 +35,11 @@ typedef struct {
     int nrows;
 } FITS_DATA;
 
-// Globals for buffers and synchronization
-FITS_DATA *bufferA = NULL;
-FITS_DATA *bufferB = NULL;
-
-pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t buffer_ready_cond = PTHREAD_COND_INITIALIZER;
-
-int buffer_to_write = 0;   // 0 = none, 1 = bufferA, 2 = bufferB
-int exit_flag = 0;
-
-// Struct to pass multiple parameters to writer thread
-typedef struct {
-    const char *filename;
-    int nrows;
-} writer_args_t;
+// Global flag for signal handling
+volatile int exit_flag = 0;
 
 void Handler(int signo) {
-    printf("\r\n END \r\n");
+    printf("\r\n\nInterrupt signal received. Cleaning up...\r\n");
     exit_flag = 1;
 }
 
@@ -106,7 +98,7 @@ void FREE_DATA_ARRAY(FITS_DATA **ptr) {
     }
 }
 
-int GET_DATA(FITS_DATA *input_struct, int i) {
+int GET_DATA(FITS_DATA *input_struct, int i, int power_dbm) {
     clock_t start_time1, end_time1, start_time2, end_time2;
     double cpu_time_used1, cpu_time_used2;
     
@@ -117,32 +109,24 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     char *MEASURED_TIME = GET_TIME();
     start_time1 = clock();
     
-    
-    // if (LO_FREQ < 956.0 + 2.7/2 - 0.2){
-    if (LO_FREQ < 957.4){
+    // Advance frequency if not at max
+    if (LO_FREQ < FREQ_MAX){
+        // LOSET falling edge: program current frequency
         gpioWrite(4, 0);
-        gpioDelay(3000);
-        LO_FREQ = LO_FREQ + 0.2;
+        gpioDelay(3000);  // 3ms delay
+        
+        // LOSET rising edge: advance to next frequency
+        gpioWrite(4, 1);
+        LO_FREQ = LO_FREQ + FREQ_STEP;
+        gpioDelay(3000);  // 3ms delay
     }
     
-    /*
-    else {
-        gpioWrite(5, 0);
-        usleep(2000);
-        gpioWrite(4, 0);
-        LO_FREQ = 904.0;
-    }
-    */
+    printf("========================================\n");
+    printf("LO FREQ: %.1f MHz @ %+d dBm\n", LO_FREQ, power_dbm);   
+    printf("========================================\n");
     
-    printf("###################################################################################################################################################################");
-    printf("LO FREQ: %lf\n", LO_FREQ);   
-    printf("###################################################################################################################################################################");
-    
-    usleep(500+1000000); //was 500
+    usleep(500000); // 500ms settling time
     end_time1 = clock();
-    
-    
-    gpioWrite(4, 1);
     
     cpu_time_used1 = ((double) (end_time1-start_time1)) / CLOCKS_PER_SEC;
     
@@ -152,42 +136,51 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     
     start_time2 = clock();
     
-    strncpy(input_struct->data[i].TIME_RPI2, MEASURED_TIME, 32); //Time of local pi
-    input_struct->data[i].TIME_RPI2[31] = '\0'; //Time of local pi
+    strncpy(input_struct->data[i].TIME_RPI2, MEASURED_TIME, 32);
+    input_struct->data[i].TIME_RPI2[31] = '\0';
     
-    strncpy(input_struct->data[i].STATE, "GPIOS_NOT_SET", 32); //State of rf box
-    input_struct->data[i].STATE[31] = '\0'; //State sent from rpi1
+    // Store power level
+    snprintf(input_struct->data[i].STATE, 32, "%+d", power_dbm);
+    input_struct->data[i].STATE[31] = '\0';
     
-    snprintf(input_struct->data[i].FREQUENCY, 32, "%f", LO_FREQ);
+    snprintf(input_struct->data[i].FREQUENCY, 32, "%.1f", LO_FREQ);
     
-    //BELOW: filename should include time and state
-    strncpy(input_struct->data[i].FILENAME, MEASURED_TIME, 32); //Time of rpi1
+    strncpy(input_struct->data[i].FILENAME, MEASURED_TIME, 32);
     input_struct->data[i].FILENAME[31] = '\0';
     
     free(MEASURED_TIME);
     end_time2 = clock();
     
-    cpu_time_used2 = cpu_time_used1 = ((double) (end_time2-start_time2)) / CLOCKS_PER_SEC;
+    cpu_time_used2 = ((double) (end_time2-start_time2)) / CLOCKS_PER_SEC;
     
     return 0;
 }
 
-int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) { //removed char *filename argument
-    if (!input_struct) return -1; //removed || !filename in boolean
+int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows, int power_dbm) {
+    if (!input_struct) return -1;
 
     fitsfile *fptr;
     int status = 0;
     int num = ChannelNumber;
     
-    char *ttype[] = { "ADHAT_1", "ADHAT_2", "ADHAT_3", "TIME_RPI2", "SWITCH STATE", "FREQUENCY", "FILENAME" }; //removed TIME_RPI1
-    char *tform[] = { "7K", "7K", "7K", "15A", "15A", "15A", "15A" }; //removed extra 15A
-    char *tunit[] = { "", "", "", "", "", "" , "" }; //removed extra ""
+    char *ttype[] = { "ADHAT_1", "ADHAT_2", "ADHAT_3", "TIME_RPI2", "POWER_DBM", "FREQUENCY", "FILENAME" };
+    char *tform[] = { "7K", "7K", "7K", "15A", "15A", "15A", "15A" };
+    char *tunit[] = { "", "", "", "", "dBm", "MHz" , "" };
     
     char full_filename[256];
-    char filename[32];
-    strncpy(filename, input_struct->data[0].FILENAME, 31);
-    filename[31] = '\0';  // Ensure null-termination
+    char filename[64];
     
+    // Get timestamp from first measurement
+    char base_filename[32];
+    strncpy(base_filename, input_struct->data[0].FILENAME, 31);
+    base_filename[31] = '\0';
+    
+    // Remove .fits extension if present
+    char *dot = strrchr(base_filename, '.');
+    if (dot) *dot = '\0';
+    
+    // Create filename with power level
+    snprintf(filename, sizeof(filename), "%s_%+ddBm.fits", base_filename, power_dbm);
     snprintf(full_filename, sizeof(full_filename), "!/home/peterson/FilterCalibrations/%s", filename);
     if (fits_create_file(&fptr, full_filename, &status))
     {
@@ -376,85 +369,22 @@ int CLOSE_GPIO(void)
     return 0;
 }
 
-// Writer thread function now accepts struct with filename and nrows
-void* writer_thread_func(void *arg) {
-    writer_args_t *args = (writer_args_t*)arg;
-    int nrows = args->nrows;
-
-    while (1) {
-        printf("NOT SAVING YET...\n");
-        pthread_mutex_lock(&buffer_mutex);
-        while (buffer_to_write == 0 && !exit_flag) {
-            pthread_cond_wait(&buffer_ready_cond, &buffer_mutex);
-        }
-        if (exit_flag) {
-            pthread_mutex_unlock(&buffer_mutex);
-            break;
-        }
-
-        FITS_DATA *buf = NULL;
-        if (buffer_to_write == 1) buf = bufferA;
-        else if (buffer_to_write == 2) buf = bufferB;
-
-        buffer_to_write = 0;
-        pthread_mutex_unlock(&buffer_mutex);
-        
-        if (buf) {
-            
-            printf("ABOUT TO SAVE DATA...\n");
-            clock_t start_time, end_time;
-            double cpu_time_used;
-        
-            start_time = clock();
-            end_time = clock();
-        
-            int status = SAVE_OUTPUT(buf, nrows); //removed filename argument
-            printf("STATUS: %d\n", status);
-            
-            if (status != 0) {
-                printf("Error saving FITS data: %d\n", status);
-            }
-            
-            cpu_time_used = ((double) (end_time-start_time)) / CLOCKS_PER_SEC;
-            }
-        }
-    return NULL;
-}
-
 int main(int argc, char **argv) {
-    if (argc < 4) {
-        printf("Usage: %s <nrows> %s <start_freq> %s <end_freq>\n", argv[0]);
-        return 1;
-    }
-
-    int nrows = atoi(argv[1]);
-    
-    printf("nrows: ######################### %d\n", nrows);
-    
-    if (nrows <= 0) {
-        printf("Invalid nrows value.\n");
-        return 1;
-    }
-    
-    int start_freq = atoi(argv[2]);
-    if (start_freq <= 0) {
-        printf("Invalid start_freq value.\n");
-        return 1;
-    }
-    
-    int end_freq = atoi(argv[3]);
-    if (end_freq <= 0) {
-        printf("Invalid end_freq value.\n");
-        return 1;
-    }
+    printf("\n=== Filter Calibration Sweep ===\n");
+    printf("Frequency range: %.1f - %.1f MHz (step: %.1f MHz)\n", 
+           FREQ_MIN, FREQ_MAX, FREQ_STEP);
+    printf("Measurements per sweep: %d\n", TOTAL_STEPS);
+    printf("Dual power sweep: +5 dBm → -4 dBm\n");
+    printf("Output: 2 FITS files (one per power level)\n\n");
 
     signal(SIGINT, Handler);
+    
+    int nrows = TOTAL_STEPS;  // One measurement per frequency step
 
-    bufferA = MAKE_DATA_ARRAY(nrows);
-    bufferB = MAKE_DATA_ARRAY(nrows);
-
-    if (!bufferA || !bufferB) {
-        printf("Failed to allocate buffers\n");
+    // Allocate single buffer for one complete sweep
+    FITS_DATA *sweep_data = MAKE_DATA_ARRAY(nrows);
+    if (!sweep_data) {
+        printf("Failed to allocate sweep buffer\n");
         return 1;
     }
     
@@ -465,91 +395,103 @@ int main(int argc, char **argv) {
         return 1;
     }
     
-    // BCM numbering
-    gpioSetMode(4, PI_OUTPUT); // LOSET -> Arduino D6
-    gpioSetMode(5, PI_OUTPUT); // RESET -> Arduino D7
-    gpioSetMode(6, PI_OUTPUT); // CALIB -> Arduino D8
+    // BCM numbering - SweepFilter GPIO connections
+    gpioSetMode(4, PI_OUTPUT); // LOSET -> Arduino D6 (program/advance)
+    gpioSetMode(5, PI_OUTPUT); // RESET -> Arduino D7 (reset + power toggle)
+    gpioSetMode(6, PI_OUTPUT); // VCO_CTRL -> Arduino D8 (VCO power on/off)
 
-    // Idle HIGH
+    // Initialize: LOSET and RESET idle HIGH, VCO_CTRL LOW (VCO off)
     gpioWrite(4, 1);
     gpioWrite(5, 1);
+    gpioWrite(6, 0);  // VCO initially off
+    gpioDelay(5000); // 5 ms settle
+    
+    printf("Initializing filter sweep (Band B: 900-960 MHz)...\n");
+    printf("Dual power sweep: +5 dBm, then -4 dBm\n");
+    
+    // Turn VCO ON to enable sweep
     gpioWrite(6, 1);
-    gpioDelay(2000); // 2 ms settle
+    gpioDelay(10000); // 10 ms for VCO to stabilize
+    printf("VCO enabled\n\n");
+
+    // Perform two sweeps at different power levels
+    int power_levels[] = {+5, -4};
     
-    // Toggle CALIB once to switch from low -> high band
-    gpioWrite(6, 0);         // falling edge -> toggle band
-    gpioDelay(3000);         // 3 ms
-    gpioWrite(6, 1);
-    gpioDelay(3000);
-
-    // gpioWrite(6, 0);
-    // sleep(0.5);
-    
-    // gpioWrite(5, 0);
-    
-    // sleep(2);
-
-    writer_args_t writer_args = {
-        .nrows = nrows
-    };
-
-    pthread_t writer_thread;
-    pthread_create(&writer_thread, NULL, writer_thread_func, &writer_args);
-
-    int current_buffer = 1;
-    int row_index = 0;
-
-    //Change to stop after one sweep
-    // while (LO_FREQ < 956.0 + 2.7/2 - 0.2) {
-    while (LO_FREQ < 957.6) {
-        clock_t start_time, end_time;
-        double cpu_time_used;
+    for (int sweep = 0; sweep < 2; sweep++) {
+        int power_dbm = power_levels[sweep];
+        printf("\n========================================\n");
+        printf("Starting Sweep %d at %+d dBm\n", sweep + 1, power_dbm);
+        printf("========================================\n\n");
         
-        start_time = clock();
-        FITS_DATA *active_buffer = (current_buffer == 1) ? bufferA : bufferB;
+        // Reset frequency to start
+        LO_FREQ = FREQ_MIN;
         
-        GET_DATA(active_buffer, row_index);
-        row_index++;
-
-        if (row_index >= nrows) {
-            pthread_mutex_lock(&buffer_mutex);
-            buffer_to_write = current_buffer;
-            pthread_cond_signal(&buffer_ready_cond);
-            pthread_mutex_unlock(&buffer_mutex);
-
-            current_buffer = (current_buffer == 1) ? 2 : 1;
-            row_index = 0;
+        // Collect all measurements for this sweep
+        for (int i = 0; i < nrows; i++) {
+            GET_DATA(sweep_data, i, power_dbm);
+            
+            if (exit_flag) {
+                printf("\nSweep interrupted by user\n");
+                goto cleanup;
+            }
         }
-        end_time = clock();
         
-        cpu_time_used = ((double) (end_time-start_time)) / CLOCKS_PER_SEC;
-        printf("LOOP EXECUTION TIME: %f seconds\n", cpu_time_used);
+        // Save sweep data to FITS file
+        printf("\nSaving sweep %d data...\n", sweep + 1);
+        int save_status = SAVE_OUTPUT(sweep_data, nrows, power_dbm);
+        if (save_status != 0) {
+            printf("Error saving sweep %d: status %d\n", sweep + 1, save_status);
+        } else {
+            printf("✓ Sweep %d saved successfully\n", sweep + 1);
+        }
+        
+        // If not the last sweep, reset for next power level
+        if (sweep < 1) {
+            printf("\nPreparing for sweep %d...\n", sweep + 2);
+            
+            // Send RESET signal to toggle power on Arduino
+            gpioWrite(5, 0);
+            gpioDelay(10000); // 10ms LOW pulse
+            gpioWrite(5, 1);
+            gpioDelay(10000); // 10ms settle
+            
+            printf("Power toggled to %+d dBm\n", power_levels[sweep + 1]);
+            sleep(1); // Additional settling time
+        }
     }
-
-    pthread_mutex_lock(&buffer_mutex);
-    exit_flag = 1;
-    pthread_cond_signal(&buffer_ready_cond);
-    pthread_mutex_unlock(&buffer_mutex);
-
-    pthread_join(writer_thread, NULL);
-
-    FREE_DATA_ARRAY(&bufferA);
-    FREE_DATA_ARRAY(&bufferB);
     
-    gpioWrite(4, 1);
-    sleep(0.5);
-    gpioWrite(5, 1);
-    sleep(0.5);
-    gpioWrite(6, 1);
-    sleep(0.5);
-    gpioWrite(5, 0);
-    sleep(0.5);
-    gpioWrite(5, 1);
+    printf("\n========================================\n");
+    printf("Both sweeps completed successfully!\n");
+    printf("========================================\n");
 
+cleanup:
+    FREE_DATA_ARRAY(&sweep_data);
+    
+    printf("\nShutting down...\n");
+    
+    // Turn off VCO
+    gpioWrite(6, 0);
+    gpioDelay(5000);
+    printf("VCO disabled\n");
+    
+    // Reset Arduino to initial state
+    gpioWrite(5, 0);
+    gpioDelay(10000);
+    gpioWrite(5, 1);
+    gpioDelay(5000);
+    printf("Arduino reset\n");
+    
+    // All GPIO signals idle HIGH
+    gpioWrite(4, 1);
+    gpioWrite(5, 1);
+    gpioWrite(6, 0); // VCO_CTRL is active HIGH, so LOW = off
+    
     gpioTerminate();
     CLOSE_GPIO();
 
-    printf("Program ended cleanly.\n");
+    printf("\n========================================\n");
+    printf("Filter sweep program terminated\n");
+    printf("========================================\n");
 
     return 0;
 }

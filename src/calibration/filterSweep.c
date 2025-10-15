@@ -54,23 +54,6 @@ char *GET_TIME(void)
     return buf;
 }
 
-// double *GET_FREQUENCIES(int start_value, int end_value, int nrows)
-// {
-//     double *return_buffer = (double *)malloc(nrows * sizeof(double));
-//     if (!return_buffer) return NULL;
-    
-//     double end = (double)end_value;
-//     double start = (double)start_value;
-
-//     double step = (end_value - start_value) / nrows;
-    
-//     for (int i = 0; i < nrows; i++) {
-//         return_buffer[i] = start_value + i * step;
-//     }
-    
-//     return return_buffer;
-// }
-
 // Allocate FITS_DATA with dynamic array
 FITS_DATA* MAKE_DATA_ARRAY(int nrows) {
     FITS_DATA *data = malloc(sizeof(FITS_DATA));

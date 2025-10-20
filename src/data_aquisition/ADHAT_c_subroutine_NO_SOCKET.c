@@ -28,9 +28,13 @@
 /* Number of ADC channels to read from each AD HAT */
 #define ChannelNumber 7
 
+/* GPIO pin definitions for Arduino Nano control (BCM numbering) */
+const int GPIO_FREQ_INCREMENT = 4;  // Increment frequency (falling edge trigger)
+const int GPIO_FREQ_RESET = 5;      // Reset frequency sweep (falling edge trigger)
+const int GPIO_LO_POWER = 6;        // LO board power control (HIGH=ON, LOW=OFF)
+
 /* Global Variables for Frequency Control */
 double LO_FREQ = 648.0;     // Local Oscillator starting frequency
-int sweepsOfFive = 0;       // Counter for completed frequency sweeps
 
 /* 
  * Structure to hold data from all three AD HATs plus metadata
@@ -263,15 +267,15 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     
     // Sweeps the Local Oscillator frequency from 648 MHz to 850 MHz in 2 MHz steps
     if (LO_FREQ < 850.0 - 2.0){
-        gpioWrite(4, 0); // Sets GPIO pin 4 low, falling edge triggers arduino to increment frequency?
+        gpioWrite(GPIO_FREQ_INCREMENT, 0); // Falling edge triggers Arduino to increment frequency
         //usleep(500000);
         LO_FREQ = LO_FREQ + 2.0;
     }
     // Resets the LO sweep back to 648 MHz after reaching 850 MHz
     else {
-        gpioWrite(5, 0); // Sets GPIO pin 5 low, falling edge triggers arduino to reset frequency?
+        gpioWrite(GPIO_FREQ_RESET, 0); // Falling edge triggers Arduino to reset frequency
         usleep(2000); // Waits 2 milliseconds
-        gpioWrite(4, 0); // Sets GPIO pin 4 low again to start new sweep? 
+        gpioWrite(GPIO_FREQ_INCREMENT, 0); // Falling edge to start new sweep
         LO_FREQ = 650.0;
     }
     printf("###################################################################################################################################################################");
@@ -281,9 +285,9 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     usleep(500); // Waits 0.5 milliseconds to allow LO to stabilize
     end_time1 = clock();
     
-    
-    gpioWrite(4, 1);
-    gpioWrite(5, 1);
+    // Return GPIO pins to idle HIGH state
+    gpioWrite(GPIO_FREQ_INCREMENT, 1);
+    gpioWrite(GPIO_FREQ_RESET, 1);
     
     
     cpu_time_used1 = ((double) (end_time1-start_time1)) / CLOCKS_PER_SEC;
@@ -340,11 +344,13 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     printf("Sys Voltage = %.6f V\n", sysVoltage);
     
     
-    if (state == 0 && LO_FREQ == 848.0){
-        sweepsOfFive = sweepsOfFive + 1;
-        if (sweepsOfFive == 4){
-            exit(0);
-        }
+    // Exit condition: State 2 detected - transition to filter sweep calibration
+    if (state == 2){
+        printf("\n========================================\n");
+        printf("STATE 2 DETECTED - Transitioning to filter sweep\n");
+        printf("========================================\n");
+        exit_flag = 1;  // Signal threads to stop
+        return 0;  // Return immediately to allow clean buffer handling
     }
     
     //DATA SAVING...//
@@ -614,6 +620,37 @@ int CLOSE_GPIO(void)
     return 0;
 }
 
+// Clean shutdown of GPIO and LO board
+void CLEANUP_AND_SHUTDOWN(void)
+{
+    printf("\n========================================\n");
+    printf("Starting cleanup procedure...\n");
+    printf("========================================\n");
+    
+    // Power down LO board
+    gpioWrite(GPIO_LO_POWER, 0);
+    gpioDelay(5000);
+    printf("✓ LO board powered down\n");
+    
+    // Reset GPIO pins to idle state
+    gpioWrite(GPIO_FREQ_INCREMENT, 1);
+    gpioWrite(GPIO_FREQ_RESET, 1);
+    gpioDelay(5000);
+    printf("✓ GPIO pins reset to idle state\n");
+    
+    // Terminate pigpio
+    gpioTerminate();
+    printf("✓ pigpio terminated\n");
+    
+    // Close AD HAT GPIOs
+    CLOSE_GPIO();
+    printf("✓ AD HAT GPIOs closed\n");
+    
+    printf("========================================\n");
+    printf("Cleanup complete\n");
+    printf("========================================\n");
+}
+
 // Writer thread function now accepts struct with filename and nrows
 void* writer_thread_func(void *arg) {
     writer_args_t *args = (writer_args_t*)arg;
@@ -713,34 +750,26 @@ int main(int argc, char **argv) {
         return 1;
     }
     
+    // BCM numbering - Arduino Nano GPIO connections
+    gpioSetMode(GPIO_FREQ_INCREMENT, PI_OUTPUT); // Increment frequency (falling edge)
+    gpioSetMode(GPIO_FREQ_RESET, PI_OUTPUT);     // Reset frequency sweep (falling edge)
+    gpioSetMode(GPIO_LO_POWER, PI_OUTPUT);       // LO board power control
+
+    // Initialize: FREQ_INCREMENT and FREQ_RESET idle HIGH, LO_POWER LOW (board off)
+    gpioWrite(GPIO_FREQ_INCREMENT, 1);
+    gpioWrite(GPIO_FREQ_RESET, 1);
+    gpioWrite(GPIO_LO_POWER, 0);  // LO board initially off
+    gpioDelay(5000); // 5 ms settle
     
-    gpioSetMode(4, PI_OUTPUT);
+    // Turn LO board ON and reset frequency counter
+    gpioWrite(GPIO_LO_POWER, 1);  // Power on LO board
+    gpioDelay(10000); // 10 ms for LO board to stabilize
     
-    gpioWrite(4, 1);
-    
-    gpioSetMode(5, PI_OUTPUT);
-    gpioWrite(5, 1);
-    
-    gpioSetMode(6, PI_OUTPUT);
-    gpioWrite(6, 1);
-    sleep(1);
-    gpioWrite(6, 0);
-    sleep(1);
-    gpioWrite(6, 1);
-    sleep(1);
-    gpioWrite(5, 0);
-    sleep(1);
-    gpioWrite(5, 1);
-    
-    
-    
-    /*
-    wiringPiSetup();
-    pinMode(13, OUTPUT);
-    pinMode(19, OUTPUT);
-    digitalWrite(13, HIGH);
-    digitalWrite(19, HIGH);
-    */
+    // Reset frequency counter to starting position
+    gpioWrite(GPIO_FREQ_RESET, 0);  // Falling edge to reset
+    gpioDelay(5000); // 5 ms LOW pulse
+    gpioWrite(GPIO_FREQ_RESET, 1);  // Return to idle HIGH
+    gpioDelay(5000); // 5 ms settle
     
     sleep(5);
     //RUN_COMMAND(); //Sets up PyPipe to listen for frequencies, should severely reduce time...
@@ -765,10 +794,14 @@ int main(int argc, char **argv) {
         //printf("LOOP BEGAN: %ld\n", (long)start_time);
         FITS_DATA *active_buffer = (current_buffer == 1) ? bufferA : bufferB;
         
-        //i think what i should do is ensure the number of frequencies to sweep thru matches the row index, generate the freq list, and then pass freq[row_index] value INTO GET_DATA
-        //i think unfortunately it might be better to just calculate the regs and set them in get_data :(
+        int result = GET_DATA(active_buffer, row_index);
         
-        GET_DATA(active_buffer, row_index);
+        // If GET_DATA returned early due to state 2, break the loop immediately
+        if (result != 0 || exit_flag) {
+            printf("State 2 detected or error occurred. Exiting main loop...\n");
+            break;
+        }
+        
         row_index++;
 
         if (row_index >= nrows) {
@@ -787,22 +820,31 @@ int main(int argc, char **argv) {
         printf("LOOP EXECUTION TIME: %f seconds\n", cpu_time_used);
     }
 
+    // Signal writer thread to stop and wait for it to finish
+    printf("\nMain loop exited. Signaling writer thread...\n");
     pthread_mutex_lock(&buffer_mutex);
     exit_flag = 1;
     pthread_cond_signal(&buffer_ready_cond);
     pthread_mutex_unlock(&buffer_mutex);
 
+    printf("Waiting for writer thread to complete...\n");
     pthread_join(writer_thread, NULL);
+    printf("✓ Writer thread completed\n");
 
+    // Free allocated buffers
+    printf("Freeing data buffers...\n");
     FREE_DATA_ARRAY(&bufferA);
     FREE_DATA_ARRAY(&bufferB);
+    printf("✓ Buffers freed\n");
     
     //free(FREQ_VALUES);
 
-    gpioTerminate();
-    CLOSE_GPIO();
+    // Clean shutdown of all hardware
+    CLEANUP_AND_SHUTDOWN();
 
+    printf("\n========================================\n");
     printf("Program ended cleanly.\n");
+    printf("========================================\n");
 
     return 0;
 }

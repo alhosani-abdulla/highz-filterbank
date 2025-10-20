@@ -44,6 +44,7 @@ typedef struct {
     char STATE[32];                  // Current state of the system
     char FREQUENCY[32];              // Current LO frequency
     char FILENAME[32];               // Output filename for this data
+    char VLT[32];					 // Voltage of system
 } GetAllValues;
 
 /* 
@@ -270,7 +271,7 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     else {
         gpioWrite(5, 0); // Sets GPIO pin 5 low, falling edge triggers arduino to reset frequency?
         usleep(2000); // Waits 2 milliseconds
-        gpioWrite(4, 0); // Sets GPIO pin 4 low again to start new sweep?
+        gpioWrite(4, 0); // Sets GPIO pin 4 low again to start new sweep? 
         LO_FREQ = 650.0;
     }
     printf("###################################################################################################################################################################");
@@ -293,17 +294,17 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     ADS1263_GetAll(ChannelList, input_struct->data[i].ADHAT_2, ChannelNumber, 22, get_DRDYPIN(22));
     ADS1263_GetAll(ChannelList, input_struct->data[i].ADHAT_3, ChannelNumber, 23, get_DRDYPIN(23));
     
+    //CALCULATION OF SWITCH STATE...//
     int state = 0;
-    
     
     for(int i = 7; i < 10; i++) {
         UDOUBLE value = ADS1263_GetChannalValue(i, 12, get_DRDYPIN(12));
-        double voltage;
+        double vlt;
         if ((value >> 31) == 1){
-            voltage = 5 * 2 - value/2147483648.0 * 5;
+            vlt = 5 * 2 - value/2147483648.0 * 5;
         }
         else {
-            voltage = value/2147483647.8 * 5;
+            vlt = value/2147483647.8 * 5;
         }
         
         int on_or_off;
@@ -318,10 +319,26 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
         state = state + on_or_off * exponentiation;
 
         // Print out the voltage for this pin
-        printf("Pin %d: ADC value = %llu, Voltage = %.6f V\n", i, value, voltage);
+        printf("Pin %d: ADC value = %llu, Voltage = %.6f V\n", i, value, vlt);
     }
     
-    //ISSUE WITH THE CODE BELOW: WHY DOES IT PASS HERE OCCASIONALLY, BUT SOMETIMES NO?
+    char STATE[32];
+    snprintf(STATE, sizeof(STATE), "%d", state);
+    
+    printf("STATE: %d\n", state);
+    
+    
+    //CALCULATION OF VOLTAGE...//
+    UDOUBLE vltReading = ADS1263_GetChannalValue(7, 23, get_DRDYPIN(23));
+    double sysVoltage;
+    if ((vltReading >> 31) == 1){
+		sysVoltage = 5 * 2 - vltReading/2147483648.0 * 5;
+    }
+    else {
+        sysVoltage = vltReading/2147483647.8 * 5;
+    }
+    printf("Sys Voltage = %.6f V\n", sysVoltage);
+    
     
     if (state == 0 && LO_FREQ == 848.0){
         sweepsOfFive = sweepsOfFive + 1;
@@ -330,17 +347,8 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
         }
     }
     
-    
-    
-    char STATE[32];
-    snprintf(STATE, sizeof(STATE), "%d", state);
-    
-    printf("STATE: %d\n", state);
-    
-    //ADD STATE SAVING HERE!!!!!!!!!!!!!!!!!!!
-    
+    //DATA SAVING...//
     start_time2 = clock();
-    //char *BUFFER = COMBINE_TELEMETRY(MEASURED_TIME, 'MEASURED_STATE', 'MEASURED_FREQUENCY');
     
     strncpy(input_struct->data[i].TIME_RPI2, MEASURED_TIME, 32); //Time of local pi
     input_struct->data[i].TIME_RPI2[31] = '\0'; //Time of local pi
@@ -350,9 +358,10 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     
     snprintf(input_struct->data[i].FREQUENCY, 32, "%f", LO_FREQ);
     
-    //BELOW: filename should include time and state
     strncpy(input_struct->data[i].FILENAME, MEASURED_TIME, 32); //Time of rpi1
     input_struct->data[i].FILENAME[31] = '\0';
+    
+    snprintf(input_struct->data[i].VLT, 32, "%f", sysVoltage);
     
     free(MEASURED_TIME);
     end_time2 = clock();
@@ -373,9 +382,9 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) { //removed char *filename a
     int status = 0;
     int num = ChannelNumber;
     
-    char *ttype[] = { "ADHAT_1", "ADHAT_2", "ADHAT_3", "TIME_RPI2", "SWITCH STATE", "FREQUENCY", "FILENAME" }; //removed TIME_RPI1
-    char *tform[] = { "7K", "7K", "7K", "15A", "15A", "15A", "15A" }; //removed extra 15A
-    char *tunit[] = { "", "", "", "", "", "" , "" }; //removed extra ""
+    char *ttype[] = { "ADHAT_1", "ADHAT_2", "ADHAT_3", "TIME_RPI2", "SWITCH STATE", "FREQUENCY", "FILENAME", "SYSTEM VOLTAGE"};
+    char *tform[] = { "7K", "7K", "7K", "15A", "15A", "15A", "15A", "15A"};
+    char *tunit[] = { "", "", "", "", "", "" , "", ""};
     
     char full_filename[256];
     char filename[32];
@@ -390,7 +399,7 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) { //removed char *filename a
     }
     
     const char *extname = "FILTER BANK DATA";
-    if (fits_create_tbl(fptr, BINARY_TBL, 0, 7, ttype, tform, tunit, extname, &status))
+    if (fits_create_tbl(fptr, BINARY_TBL, 0, 8, ttype, tform, tunit, extname, &status))
     {
         fits_report_error(stderr, status);
         return status;
@@ -420,9 +429,10 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) { //removed char *filename a
     char *col5_data = malloc(nrows * 15 * sizeof(char));
     char *col6_data = malloc(nrows * 15 * sizeof(char));
     char *col7_data = malloc(nrows * 15 * sizeof(char));
+    char *col8_data = malloc(nrows * 15 * sizeof(char));
     
 
-    if (!col1_data || !col2_data || !col3_data || !col4_data || !col5_data || !col6_data || !col6_data || !col7_data) {
+    if (!col1_data || !col2_data || !col3_data || !col4_data || !col5_data || !col6_data || !col6_data || !col7_data || !col8_data) {
         printf("Memory allocation failed for column buffers\n");
         if (col1_data) free(col1_data);
         if (col2_data) free(col2_data);
@@ -430,7 +440,8 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) { //removed char *filename a
         if (col4_data) free(col4_data);
         if (col5_data) free(col5_data);
         if (col6_data) free(col6_data);
-        if (col7_data) free(col6_data);
+        if (col7_data) free(col7_data);
+        if (col8_data) free(col8_data);
         fits_close_file(fptr, &status);
         return -1;
     }
@@ -443,8 +454,6 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) { //removed char *filename a
         }
     }
     
-    //printf("NROWS VALUEEEEEEEEEEEEEEEEEEE %d\n", nrows);
-    
     for (int i = 0; i < nrows; i++) {
         memset(&col4_data[i * 15], ' ', 15);
         if (input_struct->data[i].TIME_RPI2 == NULL){
@@ -453,26 +462,35 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) { //removed char *filename a
         printf("buffer: %p\n", (void *)&input_struct->data[i].TIME_RPI2);
         strncpy(&col4_data[i * 15], input_struct->data[i].TIME_RPI2, 15);
         col4_data[i * 15 + 14] = '\0';
+        
         memset(&col5_data[i * 15], ' ', 15);
         strncpy(&col5_data[i * 15], input_struct->data[i].STATE, 15);
         col5_data[i * 15 + 14] = '\0';
+        
         memset(&col6_data[i * 15], ' ', 15);
         strncpy(&col6_data[i * 15], input_struct->data[i].FREQUENCY, 15);
         col6_data[i * 15 + 14] = '\0';
+        
         memset(&col7_data[i * 15], ' ', 15);
         strncpy(&col7_data[i * 15], input_struct->data[i].FILENAME, 15);
         col7_data[i * 15 + 14] = '\0';
+        
+        memset(&col8_data[i * 15], ' ', 15);
+        strncpy(&col8_data[i * 15], input_struct->data[i].VLT, 15);
+        col8_data[i * 15 + 14] = '\0';
     }
     
     char **col4_ptrs = malloc(nrows * num * sizeof(char *));
     char **col5_ptrs = malloc(nrows * num * sizeof(char *));
     char **col6_ptrs = malloc(nrows * num * sizeof(char *));
     char **col7_ptrs = malloc(nrows * num * sizeof(char *));
+    char **col8_ptrs = malloc(nrows * num * sizeof(char *));
     for (int i = 0; i < nrows * num; i++) {
         col4_ptrs[i] = &col4_data[i * 15];
         col5_ptrs[i] = &col5_data[i * 15];
         col6_ptrs[i] = &col6_data[i * 15];
         col7_ptrs[i] = &col7_data[i * 15];
+        col8_ptrs[i] = &col8_data[i * 15];
     }
 
     if (fits_write_col(fptr, TUINT, 1, 1, 1, nrows * num, col1_data, &status)) {
@@ -504,6 +522,10 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) { //removed char *filename a
         fits_report_error(stderr, status);
         goto cleanup;
     }
+    if (fits_write_col(fptr, TSTRING, 8, 1, 1, nrows, col8_ptrs, &status)) {
+        fits_report_error(stderr, status);
+        goto cleanup;
+    }
 
     if (fits_flush_file(fptr, &status)) {
         fits_report_error(stderr, status);
@@ -524,6 +546,7 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) { //removed char *filename a
     free(col5_ptrs);
     free(col6_ptrs);
     free(col7_ptrs);
+    free(col8_ptrs);
 
     return 0;
 
@@ -535,6 +558,7 @@ cleanup:
     free(col5_ptrs);
     free(col6_ptrs);
     free(col7_ptrs);
+    free(col8_ptrs);
     fits_close_file(fptr, &status);
     return status;
 }

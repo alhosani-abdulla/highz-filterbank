@@ -13,6 +13,11 @@
 // Types and constants
 #define ChannelNumber 7
 
+// GPIO pin definitions for Arduino Nano + Local Oscillator control (BCM numbering)
+const int GPIO_FREQ_INCREMENT = 4;  // Increment frequency (falling edge trigger)
+const int GPIO_FREQ_RESET = 5;      // Reset frequency sweep (falling edge trigger)
+const int GPIO_LO_POWER = 6;        // LO board power control (HIGH=ON, LOW=OFF)
+
 // Filter sweep Band B: 900-960 MHz, 0.2 MHz step (matches SweepFilter.ino)
 double LO_FREQ = 900.0;             // Start frequency for Band B
 const double FREQ_MIN = 900.0;
@@ -94,12 +99,12 @@ int GET_DATA(FITS_DATA *input_struct, int i, int power_dbm) {
     
     // Advance frequency if not at max
     if (LO_FREQ < FREQ_MAX){
-        // LOSET falling edge: program current frequency
-        gpioWrite(4, 0);
+        // Falling edge on FREQ_INCREMENT: advance to next frequency
+        gpioWrite(GPIO_FREQ_INCREMENT, 0);
         gpioDelay(3000);  // 3ms delay
         
-        // LOSET rising edge: advance to next frequency
-        gpioWrite(4, 1);
+        // Rising edge: complete the pulse
+        gpioWrite(GPIO_FREQ_INCREMENT, 1);
         LO_FREQ = LO_FREQ + FREQ_STEP;
         gpioDelay(3000);  // 3ms delay
     }
@@ -108,7 +113,7 @@ int GET_DATA(FITS_DATA *input_struct, int i, int power_dbm) {
     printf("LO FREQ: %.1f MHz @ %+d dBm\n", LO_FREQ, power_dbm);   
     printf("========================================\n");
     
-    usleep(500000); // 500ms settling time
+    usleep(50000); // 500ms settling time
     end_time1 = clock();
     
     cpu_time_used1 = ((double) (end_time1-start_time1)) / CLOCKS_PER_SEC;
@@ -378,24 +383,24 @@ int main(int argc, char **argv) {
         return 1;
     }
     
-    // BCM numbering - SweepFilter GPIO connections
-    gpioSetMode(4, PI_OUTPUT); // LOSET -> Arduino D6 (program/advance)
-    gpioSetMode(5, PI_OUTPUT); // RESET -> Arduino D7 (reset + power toggle)
-    gpioSetMode(6, PI_OUTPUT); // VCO_CTRL -> Arduino D8 (VCO power on/off)
+    // BCM numbering - Arduino Nano GPIO connections
+    gpioSetMode(GPIO_FREQ_INCREMENT, PI_OUTPUT); // Increment frequency (falling edge)
+    gpioSetMode(GPIO_FREQ_RESET, PI_OUTPUT);     // Reset frequency sweep (falling edge)
+    gpioSetMode(GPIO_LO_POWER, PI_OUTPUT);       // LO board power control
 
-    // Initialize: LOSET and RESET idle HIGH, VCO_CTRL LOW (VCO off)
-    gpioWrite(4, 1);
-    gpioWrite(5, 1);
-    gpioWrite(6, 0);  // VCO initially off
+    // Initialize: FREQ_INCREMENT and FREQ_RESET idle HIGH, LO_POWER LOW (board off)
+    gpioWrite(GPIO_FREQ_INCREMENT, 1);
+    gpioWrite(GPIO_FREQ_RESET, 1);
+    gpioWrite(GPIO_LO_POWER, 0);  // LO board initially off
     gpioDelay(5000); // 5 ms settle
     
     printf("Initializing filter sweep (Band B: 900-960 MHz)...\n");
     printf("Dual power sweep: +5 dBm, then -4 dBm\n");
     
-    // Turn VCO ON to enable sweep
-    gpioWrite(6, 1);
-    gpioDelay(10000); // 10 ms for VCO to stabilize
-    printf("VCO enabled\n\n");
+    // Turn LO board ON to enable sweep
+    gpioWrite(GPIO_LO_POWER, 1);
+    gpioDelay(10000); // 10 ms for LO board to stabilize
+    printf("LO board powered on\n\n");
 
     // Perform two sweeps at different power levels
     int power_levels[] = {+5, -4};
@@ -432,13 +437,13 @@ int main(int argc, char **argv) {
         if (sweep < 1) {
             printf("\nPreparing for sweep %d...\n", sweep + 2);
             
-            // Send RESET signal to toggle power on Arduino
-            gpioWrite(5, 0);
+            // Send RESET signal to reset frequency sweep on Arduino
+            gpioWrite(GPIO_FREQ_RESET, 0);
             gpioDelay(10000); // 10ms LOW pulse
-            gpioWrite(5, 1);
+            gpioWrite(GPIO_FREQ_RESET, 1);
             gpioDelay(10000); // 10ms settle
             
-            printf("Power toggled to %+d dBm\n", power_levels[sweep + 1]);
+            printf("Frequency reset for %+d dBm sweep\n", power_levels[sweep + 1]);
             sleep(1); // Additional settling time
         }
     }
@@ -452,22 +457,17 @@ cleanup:
     
     printf("\nShutting down...\n");
     
-    // Turn off VCO
-    gpioWrite(6, 0);
-    gpioDelay(5000);
-    printf("VCO disabled\n");
-    
-    // Reset Arduino to initial state
-    gpioWrite(5, 0);
-    gpioDelay(10000);
-    gpioWrite(5, 1);
-    gpioDelay(5000);
+    // Reset Arduino to initial state (frequency counter reset)
+    gpioWrite(GPIO_FREQ_RESET, 0);
+    gpioDelay(10000);  // 10ms LOW pulse
+    gpioWrite(GPIO_FREQ_RESET, 1);
+    gpioDelay(5000);   // 5ms settle
     printf("Arduino reset\n");
     
-    // All GPIO signals idle HIGH
-    gpioWrite(4, 1);
-    gpioWrite(5, 1);
-    gpioWrite(6, 0); // VCO_CTRL is active HIGH, so LOW = off
+    // Power down LO board
+    gpioWrite(GPIO_LO_POWER, 0);
+    gpioDelay(5000);
+    printf("LO board powered down\n");
     
     gpioTerminate();
     CLOSE_GPIO();

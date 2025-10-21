@@ -2,9 +2,19 @@
 #
 # Synchronized Spectrometer Control Script
 #
-# This script coordinates two measurement programs:
-# 1. Continuous data acquisition (ADHAT_c_subroutine_NO_SOCKET)
-# 2. Filter sweep calibration (filterSweep)
+# This script coordinates two measurement programs that cannot run simultaneously
+# (they share ADC hardware):
+#
+# State Sequence: 2→3→4→5→6→7→1(open)→0 → 1(antenna, long) → repeat
+#
+# Operation on State 2:
+# 1. ACQ runs first, collecting STATE2_MAX_SWEEPS frequency sweeps (~10 seconds)
+# 2. ACQ detects it has collected enough data and exits gracefully
+# 3. CALIB starts and runs filter calibration (~20-30 seconds)
+# 4. State transitions to next state (3)
+# 5. ACQ resumes on state 3
+#
+# State 2 should be extended to ~40-50 seconds total to accommodate both programs.
 #
 # The cycle runs continuously until manually stopped (Ctrl+C)
 #

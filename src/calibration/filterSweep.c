@@ -19,11 +19,11 @@ const int GPIO_FREQ_RESET = 5;      // Reset frequency sweep (falling edge trigg
 const int GPIO_LO_POWER = 6;        // LO board power control (HIGH=ON, LOW=OFF)
 
 // Filter sweep Band B: 900-960 MHz, 0.2 MHz step (matches SweepFilter.ino)
-double LO_FREQ = 900.0;             // Start frequency for Band B
 const double FREQ_MIN = 900.0;
 const double FREQ_MAX = 960.0;
 const double FREQ_STEP = 0.2;
-const int TOTAL_STEPS = 301;        // (960.0 - 900.0) / 0.2 + 1 = 301 measurements per sweep
+#define TOTAL_STEPS ((int)(((FREQ_MAX - FREQ_MIN) / FREQ_STEP) + 1))  // Dynamically calculated: (960-900)/0.2+1 = 301 measurements per sweep
+double LO_FREQ = FREQ_MIN;          // Start frequency initialized to FREQ_MIN
 
 typedef struct {
     UDOUBLE ADHAT_1[ChannelNumber];

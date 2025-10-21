@@ -86,6 +86,8 @@ pthread_cond_t buffer_ready_cond = PTHREAD_COND_INITIALIZER;  // Signals buffer 
 /* Buffer State Tracking */
 int buffer_to_write = 0;   // 0 = none, 1 = bufferA, 2 = bufferB
 int exit_flag = 0;         // Program termination flag
+int state2_sweeps_collected = 0;  // Counter for sweeps collected on state 2
+const int STATE2_MAX_SWEEPS = 3;   // Number of sweeps to collect on state 2 before transitioning to calib
 
 /* 
  * Structure for passing parameters to writer thread
@@ -340,13 +342,24 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     // Step 1: Check RF switch state FIRST (before collecting ADC data)
     int state = READ_SWITCH_STATE();
     
-    // Step 2: Check for state 2 exit condition (before collecting expensive ADC data)
+    // Step 2: Handle state 2 (collect data, then exit after enough sweeps)
     if (state == 2){
+        state2_sweeps_collected++;
         printf("\n========================================\n");
-        printf("STATE 2 DETECTED - Transitioning to filter sweep\n");
+        printf("STATE 2 DETECTED - Collecting sweep %d/%d\n", 
+               state2_sweeps_collected, STATE2_MAX_SWEEPS);
         printf("========================================\n");
-        exit_flag = 1;  // Signal threads to stop
-        return 0;  // Return immediately without collecting data
+        
+        // Check if we've collected enough sweeps on state 2
+        if (state2_sweeps_collected >= STATE2_MAX_SWEEPS) {
+            printf("\n========================================\n");
+            printf("STATE 2: Collected %d sweeps - Transitioning to filter calibration\n", 
+                   state2_sweeps_collected);
+            printf("========================================\n");
+            exit_flag = 1;  // Signal threads to stop after this sweep completes
+            state2_sweeps_collected = 0;  // Reset counter for next time
+        }
+        // Continue to collect data on this sweep (don't return early)
     }
     
     // Get timestamp for this measurement

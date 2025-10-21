@@ -57,7 +57,6 @@ typedef struct {
     char STATE[32];                  // Current state of the system
     char FREQUENCY[32];              // Current LO frequency
     char FILENAME[32];               // Output filename for this data
-    char VLT[32];					 // Voltage of system
 } GetAllValues;
 
 /* 
@@ -67,6 +66,7 @@ typedef struct {
 typedef struct {
     GetAllValues *data;  // Dynamically allocated array of samples
     int nrows;          // Number of rows in the data array
+    double sys_voltage; // System voltage (read once per sweep)
 } FITS_DATA;
 
 /* ============= Double Buffer System and Thread Synchronization ============= */
@@ -172,6 +172,7 @@ FITS_DATA* MAKE_DATA_ARRAY(int nrows) {
     memset(data->data, 0, sizeof(GetAllValues) * nrows);
     //memset(data->data, 0, nrows);
     data->nrows = nrows;
+    data->sys_voltage = 0.0;  // Initialize system voltage
     return data;
 }
 
@@ -221,7 +222,7 @@ int READ_SWITCH_STATE(void) {
         }
         
         // Determine bit state (HIGH or LOW)
-        int on_or_off = (value < 3) ? 0 : 1;
+        int on_or_off = (vlt < 3) ? 0 : 1;
         
         // Calculate state bit contribution
         double exponentiation = exp2(i-7);
@@ -260,10 +261,9 @@ double READ_SYSTEM_VOLTAGE(void) {
  *   data_row: Pointer to GetAllValues structure to fill
  *   timestamp: Timestamp string
  *   state: Switch state value
- *   voltage: System voltage value
  * Returns: 0 on success
  */
-int STORE_METADATA(GetAllValues *data_row, const char *timestamp, int state, double voltage) {
+int STORE_METADATA(GetAllValues *data_row, const char *timestamp, int state) {
     if (!data_row || !timestamp) return -1;
     
     // Store timestamp
@@ -280,9 +280,6 @@ int STORE_METADATA(GetAllValues *data_row, const char *timestamp, int state, dou
     // Store filename
     strncpy(data_row->FILENAME, timestamp, 31);
     data_row->FILENAME[31] = '\0';
-    
-    // Store voltage
-    snprintf(data_row->VLT, 32, "%f", voltage);
     
     return 0;
 }
@@ -380,11 +377,8 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
         return -1;
     }
     
-    // Step 4: Read system voltage
-    double sysVoltage = READ_SYSTEM_VOLTAGE();
-    
-    // Step 5: Store all metadata in buffer
-    if (STORE_METADATA(&input_struct->data[i], timestamp, state, sysVoltage) != 0) {
+    // Step 4: Store all metadata in buffer
+    if (STORE_METADATA(&input_struct->data[i], timestamp, state) != 0) {
         fprintf(stderr, "Error: Failed to store metadata\n");
         free(timestamp);
         return -1;
@@ -392,7 +386,7 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     
     free(timestamp);
     
-    // Step 6: Increment frequency for next measurement
+    // Step 5: Increment frequency for next measurement
     INCREMENT_LO_FREQUENCY();
     
     return 0;
@@ -412,10 +406,10 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) {
     int status = 0;
     int num = ChannelNumber;
     
-    // FITS column definitions
-    char *ttype[] = { "ADHAT_1", "ADHAT_2", "ADHAT_3", "TIME_RPI2", "SWITCH STATE", "FREQUENCY", "FILENAME", "SYSTEM VOLTAGE"};
-    char *tform[] = { "7K", "7K", "7K", "25A", "15A", "15A", "25A", "15A"};
-    char *tunit[] = { "", "", "", "", "", "" , "", ""};
+    // FITS column definitions (removed SYSTEM VOLTAGE column)
+    char *ttype[] = { "ADHAT_1", "ADHAT_2", "ADHAT_3", "TIME_RPI2", "SWITCH STATE", "FREQUENCY", "FILENAME"};
+    char *tform[] = { "7K", "7K", "7K", "25A", "15A", "15A", "25A"};
+    char *tunit[] = { "", "", "", "", "", "", ""};
     
     // Get filename from first data row
     char full_filename[256];
@@ -432,7 +426,15 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) {
     
     // Create binary table extension
     const char *extname = "FILTER BANK DATA";
-    if (fits_create_tbl(fptr, BINARY_TBL, 0, 8, ttype, tform, tunit, extname, &status)) {
+    if (fits_create_tbl(fptr, BINARY_TBL, 0, 7, ttype, tform, tunit, extname, &status)) {
+        fits_report_error(stderr, status);
+        fits_close_file(fptr, &status);
+        return status;
+    }
+    
+    // Write system voltage to FITS header (read once per sweep)
+    if (fits_update_key(fptr, TDOUBLE, "SYSVOLT", &input_struct->sys_voltage, 
+                        "System voltage (V) at sweep start", &status)) {
         fits_report_error(stderr, status);
         fits_close_file(fptr, &status);
         return status;
@@ -448,11 +450,10 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) {
     char *col5_data = malloc(nrows * 15 * sizeof(char));  // STATE - 1 digit
     char *col6_data = malloc(nrows * 15 * sizeof(char));  // FREQUENCY - ~10 chars
     char *col7_data = malloc(nrows * 25 * sizeof(char));  // FILENAME - needs 21+ chars for timestamp.fits
-    char *col8_data = malloc(nrows * 15 * sizeof(char));  // VOLTAGE - ~10 chars
     
-    // Check all allocations (FIXED: was checking col6_data twice)
+    // Check all allocations
     if (!col1_data || !col2_data || !col3_data || !col4_data || 
-        !col5_data || !col6_data || !col7_data || !col8_data) {
+        !col5_data || !col6_data || !col7_data) {
         fprintf(stderr, "Memory allocation failed for column buffers\n");
         // Free any successful allocations
         free(col1_data);
@@ -462,7 +463,6 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) {
         free(col5_data);
         free(col6_data);
         free(col7_data);
-        free(col8_data);
         fits_close_file(fptr, &status);
         return -1;
     }
@@ -476,7 +476,7 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) {
         }
     }
     
-    // Copy string data (timestamp, state, frequency, filename, voltage)
+    // Copy string data (timestamp, state, frequency, filename)
     for (int i = 0; i < nrows; i++) {
         // Fill with spaces and copy each string field
         memset(&col4_data[i * 25], ' ', 25);
@@ -494,43 +494,36 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) {
         memset(&col7_data[i * 25], ' ', 25);
         strncpy(&col7_data[i * 25], input_struct->data[i].FILENAME, 24);
         col7_data[i * 25 + 24] = '\0';
-        
-        memset(&col8_data[i * 15], ' ', 15);
-        strncpy(&col8_data[i * 15], input_struct->data[i].VLT, 14);
-        col8_data[i * 15 + 14] = '\0';
     }
     
-    // Create pointer arrays for string columns (FIXED: was nrows * num, should be nrows)
+    // Create pointer arrays for string columns
     char **col4_ptrs = malloc(nrows * sizeof(char *));
     char **col5_ptrs = malloc(nrows * sizeof(char *));
     char **col6_ptrs = malloc(nrows * sizeof(char *));
     char **col7_ptrs = malloc(nrows * sizeof(char *));
-    char **col8_ptrs = malloc(nrows * sizeof(char *));
     
     // Check pointer array allocations
-    if (!col4_ptrs || !col5_ptrs || !col6_ptrs || !col7_ptrs || !col8_ptrs) {
+    if (!col4_ptrs || !col5_ptrs || !col6_ptrs || !col7_ptrs) {
         fprintf(stderr, "Memory allocation failed for pointer arrays\n");
         goto cleanup;
     }
     
-    // Set up pointer arrays (FIXED: was nrows * num, should be nrows)
+    // Set up pointer arrays
     for (int i = 0; i < nrows; i++) {
         col4_ptrs[i] = &col4_data[i * 25];
         col5_ptrs[i] = &col5_data[i * 15];
         col6_ptrs[i] = &col6_data[i * 15];
         col7_ptrs[i] = &col7_data[i * 25];
-        col8_ptrs[i] = &col8_data[i * 15];
     }
 
-    // Write all columns to FITS file
+    // Write all columns to FITS file (removed col8 for voltage)
     if (fits_write_col(fptr, TUINT, 1, 1, 1, nrows * num, col1_data, &status) ||
         fits_write_col(fptr, TUINT, 2, 1, 1, nrows * num, col2_data, &status) ||
         fits_write_col(fptr, TUINT, 3, 1, 1, nrows * num, col3_data, &status) ||
         fits_write_col(fptr, TSTRING, 4, 1, 1, nrows, col4_ptrs, &status) ||
         fits_write_col(fptr, TSTRING, 5, 1, 1, nrows, col5_ptrs, &status) ||
         fits_write_col(fptr, TSTRING, 6, 1, 1, nrows, col6_ptrs, &status) ||
-        fits_write_col(fptr, TSTRING, 7, 1, 1, nrows, col7_ptrs, &status) ||
-        fits_write_col(fptr, TSTRING, 8, 1, 1, nrows, col8_ptrs, &status)) {
+        fits_write_col(fptr, TSTRING, 7, 1, 1, nrows, col7_ptrs, &status)) {
         fits_report_error(stderr, status);
         goto cleanup;
     }
@@ -551,12 +544,10 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) {
         free(col5_data);
         free(col6_data);
         free(col7_data);
-        free(col8_data);
         free(col4_ptrs);
         free(col5_ptrs);
         free(col6_ptrs);
         free(col7_ptrs);
-        free(col8_ptrs);
         return status;
     }
 
@@ -570,12 +561,10 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) {
     free(col5_data);
     free(col6_data);
     free(col7_data);
-    free(col8_data);
     free(col4_ptrs);
     free(col5_ptrs);
     free(col6_ptrs);
     free(col7_ptrs);
-    free(col8_ptrs);
 
     return 0;
 
@@ -588,12 +577,10 @@ cleanup:
     free(col5_data);
     free(col6_data);
     free(col7_data);
-    free(col8_data);
     free(col4_ptrs);
     free(col5_ptrs);
     free(col6_ptrs);
     free(col7_ptrs);
-    free(col8_ptrs);
     fits_close_file(fptr, &status);
     return status;
 }
@@ -820,6 +807,11 @@ int main(int argc, char **argv) {
         start_time = clock();
         //printf("LOOP BEGAN: %ld\n", (long)start_time);
         FITS_DATA *active_buffer = (current_buffer == 1) ? bufferA : bufferB;
+        
+        // Read system voltage once at the start of each sweep (row_index == 0)
+        if (row_index == 0) {
+            active_buffer->sys_voltage = READ_SYSTEM_VOLTAGE();
+        }
         
         int result = GET_DATA(active_buffer, row_index);
         

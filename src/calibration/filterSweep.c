@@ -14,9 +14,9 @@
 #define ChannelNumber 7
 
 // GPIO pin definitions for Arduino Nano + Local Oscillator control (BCM numbering)
-const int GPIO_FREQ_INCREMENT = 4;  // Increment frequency (falling edge trigger)
-const int GPIO_FREQ_RESET = 5;      // Reset frequency sweep (falling edge trigger)
-const int GPIO_LO_POWER = 6;        // LO board power control (HIGH=ON, LOW=OFF)
+const int GPIO_FREQ_INCREMENT = 13;  // Increment frequency (falling edge trigger)
+const int GPIO_FREQ_RESET = 19;      // Reset frequency sweep (falling edge trigger)
+const int GPIO_LO_POWER = 26;        // LO board power control (HIGH=ON, LOW=OFF)
 
 // Filter sweep Band B: 900-960 MHz, 0.2 MHz step (matches SweepFilter.ino)
 const double FREQ_MIN = 900.0;

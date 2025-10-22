@@ -28,6 +28,17 @@ double LO_FREQ = FREQ_MIN;          // Start frequency initialized to FREQ_MIN
 // Output directory for FITS files
 const char *OUTPUT_DIR = "/home/peterson/FilterCalibrations";
 
+// Configurable timing parameters
+// All times are in milliseconds unless noted otherwise.
+int LO_SETTLE_MS = 50;        // usleep in GET_DATA (50 ms)
+int PULSE_LOW_US = 3000;      // gpioDelay for low pulse when incrementing (microseconds)
+int PULSE_HIGH_US = 3000;     // gpioDelay for high after increment (microseconds)
+int RESET_LOW_US = 10000;     // gpioDelay for reset low pulse (microseconds)
+int RESET_SETTLE_MS = 5;      // gpioDelay after reset (milliseconds)
+int LO_POWER_SETTLE_MS = 10;  // initial LO power settle (milliseconds)
+int INTER_SWEEP_WAIT_S = 2;   // seconds between sweeps for LO stabilization
+
+
 typedef struct {
     UDOUBLE ADHAT_1[ChannelNumber];
     UDOUBLE ADHAT_2[ChannelNumber];
@@ -147,11 +158,11 @@ int INCREMENT_LO_FREQUENCY(void) {
     if (LO_FREQ < FREQ_MAX) {
         // Send falling edge pulse to Arduino to advance frequency
         gpioWrite(GPIO_FREQ_INCREMENT, 0);
-        gpioDelay(3000);  // 3ms LOW pulse
+        gpioDelay(PULSE_LOW_US);  // low pulse (us)
         
         // Rising edge: complete the pulse
         gpioWrite(GPIO_FREQ_INCREMENT, 1);
-        gpioDelay(3000);  // 3ms HIGH
+        gpioDelay(PULSE_HIGH_US);  // high pulse (us)
         
         // Update local frequency tracker
         LO_FREQ = LO_FREQ + FREQ_STEP;
@@ -191,7 +202,7 @@ int GET_DATA(FITS_DATA *input_struct, int i, int power_dbm) {
     printf("========================================\n");
     
     // Step 1: Allow frequency to settle
-    usleep(50000); // 50ms settling time
+    usleep(LO_SETTLE_MS * 1000); // LO settling time (ms)
     end_time1 = clock();
     
     cpu_time_used1 = ((double) (end_time1-start_time1)) / CLOCKS_PER_SEC;
@@ -273,7 +284,7 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows, int power_dbm) {
     char *col7_data = malloc(nrows * 15 * sizeof(char));
     
 
-    if (!col1_data || !col2_data || !col3_data || !col4_data || !col5_data || !col6_data || !col6_data || !col7_data) {
+    if (!col1_data || !col2_data || !col3_data || !col4_data || !col5_data || !col6_data || !col7_data) {
         printf("Memory allocation failed for column buffers\n");
         if (col1_data) free(col1_data);
         if (col2_data) free(col2_data);
@@ -440,7 +451,8 @@ int main(int argc, char **argv) {
     // Start total program timer
     time_t program_start_time = time(NULL);
     clock_t program_start_clock = clock();
-    
+
+    // Timing parameters are configurable in the source (no environment overrides)
     printf("\n=== Filter Calibration Sweep ===\n");
     printf("Frequency range: %.1f - %.1f MHz (step: %.1f MHz)\n", 
            FREQ_MIN, FREQ_MAX, FREQ_STEP);
@@ -449,6 +461,11 @@ int main(int argc, char **argv) {
     printf("Output: 2 FITS files (one per power level)\n\n");
 
     int nrows = TOTAL_STEPS;  // One measurement per frequency step
+
+    // Print active timing settings for transparency when tuning
+    printf("Active timing settings:\n");
+    printf("  LO_SETTLE_MS=%d ms, PULSE_LOW_US=%d us, PULSE_HIGH_US=%d us\n", LO_SETTLE_MS, PULSE_LOW_US, PULSE_HIGH_US);
+    printf("  RESET_LOW_US=%d us, LO_POWER_SETTLE_MS=%d ms, INTER_SWEEP_WAIT_S=%d s\n", RESET_LOW_US, LO_POWER_SETTLE_MS, INTER_SWEEP_WAIT_S);
 
     // Allocate single buffer for one complete sweep
     FITS_DATA *sweep_data = MAKE_DATA_ARRAY(nrows);
@@ -487,14 +504,14 @@ int main(int argc, char **argv) {
     // Reset frequency sweep to ensure starting from 900 MHz
     printf("Resetting Arduino frequency counter to start position...\n");
     gpioWrite(GPIO_FREQ_RESET, 0);
-    gpioDelay(10000);  // 10ms LOW pulse
+    gpioDelay(RESET_LOW_US);  // reset low pulse (us)
     gpioWrite(GPIO_FREQ_RESET, 1);
-    gpioDelay(10000);  // 10ms settle
+    gpioDelay(RESET_LOW_US);  // reset settle (us)
     printf("Frequency counter reset to %.1f MHz\n\n", FREQ_MIN);
     
     // Turn LO board ON to enable sweep
     gpioWrite(GPIO_LO_POWER, 1);
-    gpioDelay(10000); // 10 ms for LO board to stabilize
+    gpioDelay(LO_POWER_SETTLE_MS * 1000); // LO power settle (ms)
     printf("LO board powered on\n\n");
 
     // Perform two sweeps at different power levels
@@ -544,13 +561,13 @@ int main(int argc, char **argv) {
             
             // Send RESET signal to reset frequency sweep on Arduino
             gpioWrite(GPIO_FREQ_RESET, 0);
-            gpioDelay(10000); // 10ms LOW pulse
+            gpioDelay(RESET_LOW_US); // reset low pulse (us)
             gpioWrite(GPIO_FREQ_RESET, 1);
-            gpioDelay(10000); // 10ms settle
+            gpioDelay(RESET_LOW_US); // reset settle (us)
             
             printf("Frequency reset for %+d dBm sweep\n", power_levels[sweep + 1]);
             printf("Allowing LO to stabilize output power...\n");
-            sleep(2); // 3 seconds settling time for LO power stabilization
+            sleep(INTER_SWEEP_WAIT_S); // seconds settling time for LO power stabilization
         }
     }
     
@@ -564,11 +581,14 @@ cleanup:
     printf("\nShutting down...\n");
     
     // Reset Arduino to initial state (frequency counter reset)
-    gpioWrite(GPIO_FREQ_RESET, 0);
-    gpioDelay(10000);  // 10ms LOW pulse
-    gpioWrite(GPIO_FREQ_RESET, 1);
-    gpioDelay(5000);   // 5ms settle
-    printf("Arduino reset\n");
+    // Some firmware requires two pulses to reliably return to initial state.
+    for (int _r = 0; _r < 2; _r++) {
+        gpioWrite(GPIO_FREQ_RESET, 0);
+        gpioDelay(10000);  // 10ms LOW pulse
+        gpioWrite(GPIO_FREQ_RESET, 1);
+        gpioDelay(5000);   // 5ms settle
+    }
+    printf("Arduino reset (double pulse)\n");
     
     // Power down LO board
     gpioWrite(GPIO_LO_POWER, 0);

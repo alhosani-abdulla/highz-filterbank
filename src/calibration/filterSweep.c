@@ -25,6 +25,9 @@ const double FREQ_STEP = 0.2;
 #define TOTAL_STEPS ((int)(((FREQ_MAX - FREQ_MIN) / FREQ_STEP) + 1))  // Dynamically calculated: (960-900)/0.2+1 = 301 measurements per sweep
 double LO_FREQ = FREQ_MIN;          // Start frequency initialized to FREQ_MIN
 
+// Output directory for FITS files
+const char *OUTPUT_DIR = "/home/peterson/FilterCalibrations";
+
 typedef struct {
     UDOUBLE ADHAT_1[ChannelNumber];
     UDOUBLE ADHAT_2[ChannelNumber];
@@ -41,10 +44,12 @@ typedef struct {
 } FITS_DATA;
 
 // Global flag for signal handling
-volatile int exit_flag = 0;
+volatile sig_atomic_t exit_flag = 0;
 
 void Handler(int signo) {
-    printf("\r\n\nInterrupt signal received. Cleaning up...\r\n");
+    // Use write() for async-signal safety
+    const char msg[] = "\n\n*** Interrupt signal received (Ctrl+C) - Shutting down... ***\n\n";
+    write(STDERR_FILENO, msg, sizeof(msg) - 1);
     exit_flag = 1;
 }
 
@@ -243,7 +248,7 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows, int power_dbm) {
     
     // Create filename with power level
     snprintf(filename, sizeof(filename), "%s_%+ddBm.fits", base_filename, power_dbm);
-    snprintf(full_filename, sizeof(full_filename), "!/home/peterson/FilterCalibrations/%s", filename);
+    snprintf(full_filename, sizeof(full_filename), "!%s/%s", OUTPUT_DIR, filename);
     if (fits_create_file(&fptr, full_filename, &status))
     {
         fits_report_error(stderr, status);
@@ -432,6 +437,10 @@ int CLOSE_GPIO(void)
 }
 
 int main(int argc, char **argv) {
+    // Start total program timer
+    time_t program_start_time = time(NULL);
+    clock_t program_start_clock = clock();
+    
     printf("\n=== Filter Calibration Sweep ===\n");
     printf("Frequency range: %.1f - %.1f MHz (step: %.1f MHz)\n", 
            FREQ_MIN, FREQ_MAX, FREQ_STEP);
@@ -439,8 +448,6 @@ int main(int argc, char **argv) {
     printf("Dual power sweep: +5 dBm → -4 dBm\n");
     printf("Output: 2 FITS files (one per power level)\n\n");
 
-    signal(SIGINT, Handler);
-    
     int nrows = TOTAL_STEPS;  // One measurement per frequency step
 
     // Allocate single buffer for one complete sweep
@@ -457,6 +464,12 @@ int main(int argc, char **argv) {
         return 1;
     }
     
+    // CRITICAL: Install signal handler AFTER gpioInitialise()
+    // This overrides pigpio's default signal handler
+    signal(SIGINT, Handler);
+    signal(SIGTERM, Handler);
+    printf("✓ Signal handlers installed for Ctrl+C\n\n");
+    
     // BCM numbering - Arduino Nano GPIO connections
     gpioSetMode(GPIO_FREQ_INCREMENT, PI_OUTPUT); // Increment frequency (falling edge)
     gpioSetMode(GPIO_FREQ_RESET, PI_OUTPUT);     // Reset frequency sweep (falling edge)
@@ -471,6 +484,14 @@ int main(int argc, char **argv) {
     printf("Initializing filter sweep (Band B: 900-960 MHz)...\n");
     printf("Dual power sweep: +5 dBm, then -4 dBm\n");
     
+    // Reset frequency sweep to ensure starting from 900 MHz
+    printf("Resetting Arduino frequency counter to start position...\n");
+    gpioWrite(GPIO_FREQ_RESET, 0);
+    gpioDelay(10000);  // 10ms LOW pulse
+    gpioWrite(GPIO_FREQ_RESET, 1);
+    gpioDelay(10000);  // 10ms settle
+    printf("Frequency counter reset to %.1f MHz\n\n", FREQ_MIN);
+    
     // Turn LO board ON to enable sweep
     gpioWrite(GPIO_LO_POWER, 1);
     gpioDelay(10000); // 10 ms for LO board to stabilize
@@ -478,6 +499,7 @@ int main(int argc, char **argv) {
 
     // Perform two sweeps at different power levels
     int power_levels[] = {+5, -4};
+    double sweep_times[2] = {0.0, 0.0};  // Store sweep durations
     
     for (int sweep = 0; sweep < 2; sweep++) {
         int power_dbm = power_levels[sweep];
@@ -485,17 +507,21 @@ int main(int argc, char **argv) {
         printf("Starting Sweep %d at %+d dBm\n", sweep + 1, power_dbm);
         printf("========================================\n\n");
         
+        // Start sweep timer
+        clock_t sweep_start = clock();
+        
         // Reset frequency to start
         LO_FREQ = FREQ_MIN;
         
         // Collect all measurements for this sweep
         for (int i = 0; i < nrows; i++) {
-            GET_DATA(sweep_data, i, power_dbm);
-            
+            // Check exit flag before each measurement
             if (exit_flag) {
-                printf("\nSweep interrupted by user\n");
+                printf("\nSweep interrupted by user. Cleaning up...\n");
                 goto cleanup;
             }
+            
+            GET_DATA(sweep_data, i, power_dbm);
         }
         
         // Save sweep data to FITS file
@@ -506,6 +532,11 @@ int main(int argc, char **argv) {
         } else {
             printf("✓ Sweep %d saved successfully\n", sweep + 1);
         }
+        
+        // End sweep timer and store duration
+        clock_t sweep_end = clock();
+        sweep_times[sweep] = ((double)(sweep_end - sweep_start)) / CLOCKS_PER_SEC;
+        printf("Sweep %d duration: %.2f seconds\n", sweep + 1, sweep_times[sweep]);
         
         // If not the last sweep, reset for next power level
         if (sweep < 1) {
@@ -518,7 +549,8 @@ int main(int argc, char **argv) {
             gpioDelay(10000); // 10ms settle
             
             printf("Frequency reset for %+d dBm sweep\n", power_levels[sweep + 1]);
-            sleep(1); // Additional settling time
+            printf("Allowing LO to stabilize output power...\n");
+            sleep(2); // 3 seconds settling time for LO power stabilization
         }
     }
     
@@ -545,6 +577,23 @@ cleanup:
     
     gpioTerminate();
     CLOSE_GPIO();
+
+    // Calculate total program runtime
+    time_t program_end_time = time(NULL);
+    clock_t program_end_clock = clock();
+    double total_cpu_time = ((double)(program_end_clock - program_start_clock)) / CLOCKS_PER_SEC;
+    double total_wall_time = difftime(program_end_time, program_start_time);
+    
+    printf("\n========================================\n");
+    printf("TIMING SUMMARY\n");
+    printf("========================================\n");
+    printf("Sweep 1 (+5 dBm):  %.2f seconds\n", sweep_times[0]);
+    printf("Sweep 2 (-4 dBm):  %.2f seconds\n", sweep_times[1]);
+    printf("Total sweep time:  %.2f seconds\n", sweep_times[0] + sweep_times[1]);
+    printf("----------------------------------------\n");
+    printf("Total CPU time:    %.2f seconds\n", total_cpu_time);
+    printf("Total wall time:   %.0f seconds (%.1f minutes)\n", total_wall_time, total_wall_time / 60.0);
+    printf("========================================\n");
 
     printf("\n========================================\n");
     printf("Filter sweep program terminated\n");

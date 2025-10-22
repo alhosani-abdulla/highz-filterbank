@@ -15,6 +15,7 @@
 #include <pthread.h>  // POSIX threading
 #include <time.h>     // Time functions
 #include <math.h>     // Mathematical functions
+#include <unistd.h>   // POSIX API (write, usleep)
 
 /* Hardware-Specific Libraries */
 #include <fitsio.h>   // FITS file format handling
@@ -85,9 +86,12 @@ pthread_cond_t buffer_ready_cond = PTHREAD_COND_INITIALIZER;  // Signals buffer 
 
 /* Buffer State Tracking */
 int buffer_to_write = 0;   // 0 = none, 1 = bufferA, 2 = bufferB
-int exit_flag = 0;         // Program termination flag
+volatile sig_atomic_t exit_flag = 0;  // Program termination flag (volatile for signal safety)
 int state2_sweeps_collected = 0;  // Counter for sweeps collected on state 2
 const int STATE2_MAX_SWEEPS = 3;   // Number of sweeps to collect on state 2 before transitioning to calib
+
+/* Global thread handle for cleanup in signal handler */
+pthread_t global_writer_thread;
 
 /* 
  * Structure for passing parameters to writer thread
@@ -98,6 +102,10 @@ typedef struct {
     int nrows;            // Number of rows to write
 } writer_args_t;
 
+/* ============= Forward Declarations ============= */
+void FREE_DATA_ARRAY(FITS_DATA **ptr);
+int CLOSE_GPIO(void);
+
 /* ============= Helper Functions ============= */
 
 /*
@@ -105,19 +113,29 @@ typedef struct {
  * Parameters:
  *   signo: Signal number received
  * Returns: void
+ * Note: Sets exit_flag to trigger cleanup in main loop
  */
 void Handler(int signo) {
-    printf("\r\n END \r\n");
-    exit_flag = 1;
-}
-
-/*
- * Buffer combination function (placeholder)
- * Returns: char pointer to combined buffer
- */
-char* COMBINE_BUFFERS(void)
-{
+    // Use write() instead of printf() as it's async-signal-safe
+    const char msg[] = "\n\n*** Interrupt signal received (Ctrl+C) - Shutting down... ***\n\n";
+    write(STDERR_FILENO, msg, sizeof(msg) - 1);
     
+    // Set exit flag - main loop will handle cleanup
+    exit_flag = 1;
+    
+    // Wake up writer thread if it's waiting
+    pthread_cond_signal(&buffer_ready_cond);
+
+    // Reset GPIO pins to idle state
+    gpioWrite(GPIO_FREQ_INCREMENT, 1);
+    gpioWrite(GPIO_FREQ_RESET, 1);
+    gpioDelay(5000);
+    printf("✓ GPIO pins reset to idle state\n");
+
+    // Power down LO board
+    gpioWrite(GPIO_LO_POWER, 0);
+    gpioDelay(5000);
+    printf("✓ LO board powered down\n");
 }
 
 /*
@@ -162,7 +180,6 @@ FITS_DATA* MAKE_DATA_ARRAY(int nrows) {
         return NULL;
     }
     data->data = malloc(sizeof(GetAllValues) * nrows);
-    //data->data = malloc(nrows);
     
     if (!data->data) {
         printf("Memory allocation for data array failed!\n");
@@ -170,7 +187,6 @@ FITS_DATA* MAKE_DATA_ARRAY(int nrows) {
         return NULL;
     }
     memset(data->data, 0, sizeof(GetAllValues) * nrows);
-    //memset(data->data, 0, nrows);
     data->nrows = nrows;
     data->sys_voltage = 0.0;  // Initialize system voltage
     return data;
@@ -339,23 +355,11 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     // Step 1: Check RF switch state FIRST (before collecting ADC data)
     int state = READ_SWITCH_STATE();
     
-    // Step 2: Handle state 2 (collect data, then exit after enough sweeps)
+    // Step 2: Handle state 2 detection (do not exit yet, just log)
     if (state == 2){
-        state2_sweeps_collected++;
         printf("\n========================================\n");
-        printf("STATE 2 DETECTED - Collecting sweep %d/%d\n", 
-               state2_sweeps_collected, STATE2_MAX_SWEEPS);
+        printf("STATE 2 DETECTED - Currently in sweep collection\n");
         printf("========================================\n");
-        
-        // Check if we've collected enough sweeps on state 2
-        if (state2_sweeps_collected >= STATE2_MAX_SWEEPS) {
-            printf("\n========================================\n");
-            printf("STATE 2: Collected %d sweeps - Transitioning to filter calibration\n", 
-                   state2_sweeps_collected);
-            printf("========================================\n");
-            exit_flag = 1;  // Signal threads to stop after this sweep completes
-            state2_sweeps_collected = 0;  // Reset counter for next time
-        }
         // Continue to collect data on this sweep (don't return early)
     }
     
@@ -723,33 +727,14 @@ void* writer_thread_func(void *arg) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4) {
-        printf("Usage: %s <nrows> %s <start_freq> %s <end_freq>\n", argv[0]);
-        return 1;
-    }
-
-    int nrows = atoi(argv[1]);
+    // Use TOTAL_STEPS constant for nrows (calculated from FREQ_MIN, FREQ_MAX, FREQ_STEP)
+    int nrows = TOTAL_STEPS;
     
-    printf("nrows: ######################### %d\n", nrows);
-    
-    if (nrows <= 0) {
-        printf("Invalid nrows value.\n");
-        return 1;
-    }
-    
-    int start_freq = atoi(argv[2]);
-    if (start_freq <= 0) {
-        printf("Invalid start_freq value.\n");
-        return 1;
-    }
-    
-    int end_freq = atoi(argv[3]);
-    if (end_freq <= 0) {
-        printf("Invalid end_freq value.\n");
-        return 1;
-    }
-
-    signal(SIGINT, Handler);
+    printf("Data acquisition configuration:\n");
+    printf("  Rows per sweep: %d\n", nrows);
+    printf("  Frequency range: %.0f-%.0f MHz\n", FREQ_MIN, FREQ_MAX);
+    printf("  Frequency step: %.1f MHz\n", FREQ_STEP);
+    printf("  Output directory: %s\n", OUTPUT_DIR);
 
     bufferA = MAKE_DATA_ARRAY(nrows);
     bufferB = MAKE_DATA_ARRAY(nrows);
@@ -765,6 +750,12 @@ int main(int argc, char **argv) {
         printf("initialization of pigpio failed\n");
         return 1;
     }
+    
+    // CRITICAL: Install signal handler AFTER gpioInitialise() 
+    // This overrides pigpio's default signal handler
+    signal(SIGINT, Handler);
+    signal(SIGTERM, Handler);
+    printf("✓ Signal handlers installed for Ctrl+C\n");
     
     // BCM numbering - Arduino Nano GPIO connections
     gpioSetMode(GPIO_FREQ_INCREMENT, PI_OUTPUT); // Increment frequency (falling edge)
@@ -794,11 +785,12 @@ int main(int argc, char **argv) {
         .nrows = nrows
     };
 
-    pthread_t writer_thread;
-    pthread_create(&writer_thread, NULL, writer_thread_func, &writer_args);
+    // Create writer thread and store handle globally for signal handler
+    pthread_create(&global_writer_thread, NULL, writer_thread_func, &writer_args);
 
     int current_buffer = 1;
     int row_index = 0;
+    int state2_detected_in_current_sweep = 0;
     
     while (!exit_flag) {
         clock_t start_time, end_time;
@@ -811,23 +803,56 @@ int main(int argc, char **argv) {
         // Read system voltage once at the start of each sweep (row_index == 0)
         if (row_index == 0) {
             active_buffer->sys_voltage = READ_SYSTEM_VOLTAGE();
+            state2_detected_in_current_sweep = 0;  // Reset flag for new sweep
         }
         
         int result = GET_DATA(active_buffer, row_index);
         
-        // If GET_DATA returned early due to state 2, break the loop immediately
-        if (result != 0 || exit_flag) {
-            printf("State 2 detected or error occurred. Exiting main loop...\n");
+        // Check for interrupt signal immediately after GET_DATA
+        if (exit_flag) {
+            printf("\nExit signal detected. Breaking out of main loop...\n");
             break;
+        }
+        
+        // Check for errors
+        if (result != 0) {
+            printf("Error occurred in GET_DATA. Exiting main loop...\n");
+            break;
+        }
+        
+        // Check if state 2 was detected in this measurement
+        if (atoi(active_buffer->data[row_index].STATE) == 2) {
+            state2_detected_in_current_sweep = 1;
         }
         
         row_index++;
 
+        // Check if sweep is complete
         if (row_index >= nrows) {
+            // Signal writer thread to save this buffer
             pthread_mutex_lock(&buffer_mutex);
             buffer_to_write = current_buffer;
             pthread_cond_signal(&buffer_ready_cond);
             pthread_mutex_unlock(&buffer_mutex);
+            
+            // If state 2 was detected in this sweep, increment counter
+            if (state2_detected_in_current_sweep) {
+                state2_sweeps_collected++;
+                printf("\n========================================\n");
+                printf("STATE 2 SWEEP COMPLETED: %d/%d sweeps collected\n", 
+                       state2_sweeps_collected, STATE2_MAX_SWEEPS);
+                printf("========================================\n");
+                
+                // Check if we've collected enough sweeps on state 2
+                if (state2_sweeps_collected >= STATE2_MAX_SWEEPS) {
+                    printf("\n========================================\n");
+                    printf("STATE 2: Collected %d complete sweeps\n", state2_sweeps_collected);
+                    printf("All required data collected. Exiting...\n");
+                    printf("========================================\n");
+                    exit_flag = 1;
+                    break;  // Exit the main loop
+                }
+            }
 
             current_buffer = (current_buffer == 1) ? 2 : 1;
             row_index = 0;
@@ -839,27 +864,36 @@ int main(int argc, char **argv) {
         printf("LOOP EXECUTION TIME: %f seconds\n", cpu_time_used);
     }
 
-    // Signal writer thread to stop and wait for it to finish
-    printf("\nMain loop exited. Signaling writer thread...\n");
+    // Clean shutdown sequence - executed whether exiting normally or via Ctrl+C
+    printf("\n========================================\n");
+    printf("Beginning clean shutdown sequence...\n");
+    printf("========================================\n");
+    
+    // Step 1: Signal writer thread to stop and wait for it to finish
+    printf("Step 1/4: Signaling writer thread to stop...\n");
     pthread_mutex_lock(&buffer_mutex);
     exit_flag = 1;
     pthread_cond_signal(&buffer_ready_cond);
     pthread_mutex_unlock(&buffer_mutex);
 
     printf("Waiting for writer thread to complete...\n");
-    pthread_join(writer_thread, NULL);
+    pthread_join(global_writer_thread, NULL);
     printf("✓ Writer thread completed\n");
 
-    // Free allocated buffers
-    printf("Freeing data buffers...\n");
+    // Step 2: Free allocated buffers
+    printf("\nStep 2/4: Freeing data buffers...\n");
     FREE_DATA_ARRAY(&bufferA);
     FREE_DATA_ARRAY(&bufferB);
     printf("✓ Buffers freed\n");
     
-    //free(FREQ_VALUES);
-
-    // Clean shutdown of all hardware
+    // Step 3: Clean shutdown of all hardware (GPIO, LO board, AD HATs)
+    printf("\nStep 3/4: Shutting down hardware...\n");
     CLEANUP_AND_SHUTDOWN();
+    
+    // Step 4: Final summary
+    printf("\nStep 4/4: Final summary\n");
+    printf("  Total state 2 sweeps collected: %d\n", state2_sweeps_collected);
+    printf("  Program terminated successfully\n");
 
     printf("\n========================================\n");
     printf("Program ended cleanly.\n");

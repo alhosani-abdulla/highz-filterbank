@@ -86,60 +86,134 @@ void FREE_DATA_ARRAY(FITS_DATA **ptr) {
     }
 }
 
+/*
+ * Collects ADC data from all three AD HATs
+ * Parameters:
+ *   data_row: Pointer to GetAllValues structure to store the data
+ * Returns: 0 on success, -1 on failure
+ */
+int COLLECT_ADC_DATA(GetAllValues *data_row) {
+    if (!data_row) return -1;
+    
+    UBYTE ChannelList[ChannelNumber] = {0,1,2,3,4,5,6};
+    
+    ADS1263_GetAll(ChannelList, data_row->ADHAT_1, ChannelNumber, 12, get_DRDYPIN(12));
+    ADS1263_GetAll(ChannelList, data_row->ADHAT_2, ChannelNumber, 22, get_DRDYPIN(22));
+    ADS1263_GetAll(ChannelList, data_row->ADHAT_3, ChannelNumber, 23, get_DRDYPIN(23));
+    
+    return 0;
+}
+
+/*
+ * Stores metadata into data structure
+ * Parameters:
+ *   data_row: Pointer to GetAllValues structure to fill
+ *   timestamp: Timestamp string
+ *   power_dbm: Output power level
+ * Returns: 0 on success
+ */
+int STORE_METADATA(GetAllValues *data_row, const char *timestamp, int power_dbm) {
+    if (!data_row || !timestamp) return -1;
+    
+    // Store timestamp
+    strncpy(data_row->TIME_RPI2, timestamp, 31);
+    data_row->TIME_RPI2[31] = '\0';
+    
+    // Store power level
+    snprintf(data_row->STATE, 32, "%+d", power_dbm);
+    data_row->STATE[31] = '\0';
+    
+    // Store frequency
+    snprintf(data_row->FREQUENCY, 32, "%.1f", LO_FREQ);
+    
+    // Store filename
+    strncpy(data_row->FILENAME, timestamp, 31);
+    data_row->FILENAME[31] = '\0';
+    
+    return 0;
+}
+
+/*
+ * Increments the Local Oscillator frequency
+ * Sends GPIO pulse to Arduino to advance frequency
+ * Returns: 0 on success
+ */
+int INCREMENT_LO_FREQUENCY(void) {
+    if (LO_FREQ < FREQ_MAX) {
+        // Send falling edge pulse to Arduino to advance frequency
+        gpioWrite(GPIO_FREQ_INCREMENT, 0);
+        gpioDelay(3000);  // 3ms LOW pulse
+        
+        // Rising edge: complete the pulse
+        gpioWrite(GPIO_FREQ_INCREMENT, 1);
+        gpioDelay(3000);  // 3ms HIGH
+        
+        // Update local frequency tracker
+        LO_FREQ = LO_FREQ + FREQ_STEP;
+    }
+    
+    return 0;
+}
+
+/*
+ * Main data collection function - orchestrates the measurement cycle
+ * Parameters:
+ *   input_struct: FITS_DATA structure containing data buffer
+ *   i: Row index in the buffer where data will be stored
+ *   power_dbm: Output power level for this measurement
+ * Returns: 0 on success, -1 on error
+ */
 int GET_DATA(FITS_DATA *input_struct, int i, int power_dbm) {
     clock_t start_time1, end_time1, start_time2, end_time2;
     double cpu_time_used1, cpu_time_used2;
     
-    if (!input_struct || i >= input_struct->nrows) return -1;
-
-    UBYTE ChannelList[ChannelNumber] = {0,1,2,3,4,5,6};
+    // Validate inputs
+    if (!input_struct) return -1;
+    if (i < 0 || i >= input_struct->nrows) return -1;
+    if (!input_struct->data) return -1;
     
+    // Get timestamp for this measurement
     char *MEASURED_TIME = GET_TIME();
-    start_time1 = clock();
-    
-    // Advance frequency if not at max
-    if (LO_FREQ < FREQ_MAX){
-        // Falling edge on FREQ_INCREMENT: advance to next frequency
-        gpioWrite(GPIO_FREQ_INCREMENT, 0);
-        gpioDelay(3000);  // 3ms delay
-        
-        // Rising edge: complete the pulse
-        gpioWrite(GPIO_FREQ_INCREMENT, 1);
-        LO_FREQ = LO_FREQ + FREQ_STEP;
-        gpioDelay(3000);  // 3ms delay
+    if (!MEASURED_TIME) {
+        fprintf(stderr, "Error: Failed to get timestamp\n");
+        return -1;
     }
+    
+    start_time1 = clock();
     
     printf("========================================\n");
     printf("LO FREQ: %.1f MHz @ %+d dBm\n", LO_FREQ, power_dbm);   
     printf("========================================\n");
     
-    usleep(50000); // 500ms settling time
+    // Step 1: Allow frequency to settle
+    usleep(50000); // 50ms settling time
     end_time1 = clock();
     
     cpu_time_used1 = ((double) (end_time1-start_time1)) / CLOCKS_PER_SEC;
     
-    ADS1263_GetAll(ChannelList, input_struct->data[i].ADHAT_1, ChannelNumber, 12, get_DRDYPIN(12));
-    ADS1263_GetAll(ChannelList, input_struct->data[i].ADHAT_2, ChannelNumber, 22, get_DRDYPIN(22));
-    ADS1263_GetAll(ChannelList, input_struct->data[i].ADHAT_3, ChannelNumber, 23, get_DRDYPIN(23));
+    // Step 2: Collect ADC data from all three AD HATs at current frequency
+    if (COLLECT_ADC_DATA(&input_struct->data[i]) != 0) {
+        fprintf(stderr, "Error: Failed to collect ADC data\n");
+        free(MEASURED_TIME);
+        return -1;
+    }
     
     start_time2 = clock();
     
-    strncpy(input_struct->data[i].TIME_RPI2, MEASURED_TIME, 32);
-    input_struct->data[i].TIME_RPI2[31] = '\0';
-    
-    // Store power level
-    snprintf(input_struct->data[i].STATE, 32, "%+d", power_dbm);
-    input_struct->data[i].STATE[31] = '\0';
-    
-    snprintf(input_struct->data[i].FREQUENCY, 32, "%.1f", LO_FREQ);
-    
-    strncpy(input_struct->data[i].FILENAME, MEASURED_TIME, 32);
-    input_struct->data[i].FILENAME[31] = '\0';
+    // Step 3: Store all metadata in buffer
+    if (STORE_METADATA(&input_struct->data[i], MEASURED_TIME, power_dbm) != 0) {
+        fprintf(stderr, "Error: Failed to store metadata\n");
+        free(MEASURED_TIME);
+        return -1;
+    }
     
     free(MEASURED_TIME);
     end_time2 = clock();
     
     cpu_time_used2 = ((double) (end_time2-start_time2)) / CLOCKS_PER_SEC;
+    
+    // Step 4: Increment frequency for next measurement (after reading current frequency)
+    INCREMENT_LO_FREQUENCY();
     
     return 0;
 }

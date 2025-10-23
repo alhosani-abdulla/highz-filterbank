@@ -60,7 +60,7 @@ def readData(fileName, sweepIdx, isNotCal = False):
 		returndata[sweepIdx][0][:7], data[sweepIdx][1][:7], data[sweepIdx][2][:7], data[sweepIdx][3], data[sweepIdx][4], int(float(data[sweepIdx][5]))
 
 def getCalDict():
-	calFileName, calFileTime = getFilePath('/home/peterson/FilterCalibrations/', -2)
+	calFileName, calFileTime = getFilePath('/media/peterson/INDURANCE/FilterCalibrations/', -2)
 	if "-4" in calFileName: pwrSetting = -10
 	elif "+5" in calFileName: pwrSetting = -1
 	hdul = fits.open(calFileName)
@@ -74,7 +74,7 @@ def run():
 	
 	fig = plt.figure()
 	ax = fig.add_subplot(111)
-	#ax.set_ylim(-55, -30)
+	ax.set_ylim(-80, 0)
 	ax.set_xlim(50,250)
 	ax.grid()
 	
@@ -83,11 +83,15 @@ def run():
 	
 	calDict = getCalDict()
 	
-	fileName, fileTime = getFilePath('/home/peterson/Continuous_Sweep', -2)
+	fileName, fileTime = getFilePath('/media/peterson/INDURANCE/Data', -2)
 	print(fileName)
 	if fileName == None or fileTime == None:
 		sys.exit()
 	nrows = numOfRows(fileName)
+	
+	# Get voltage and state from first sweep
+	first_sweep_voltage = None
+	first_sweep_state = None
 	
 	for sweepIdx in range(nrows):
 		a1, a2, a3, time, state, freq, vlt = readData(fileName, sweepIdx, True)
@@ -100,16 +104,20 @@ def run():
 		#dataList = toDB(voltsData)
 		
 		ax.scatter(adjAxis, dataList, marker = 'x' , c = colors, s=10)
-		if sweepIdx == 0: #only displays first measure of voltage/state in the sweep
-			ax.annotate(f"{vlt} V", (225, -20) , ha= "center")
-			ax.annotate(f"State: {state}", (225, -21), ha="center")
+		if sweepIdx == 0: #capture first measure of voltage/state
+			first_sweep_voltage = vlt
+			first_sweep_state = state
+	
+	# Add legend with voltage and state info
+	ax.legend([f'Voltage: {first_sweep_voltage} V', f'State: {first_sweep_state}'], 
+	          loc='upper right', framealpha=0.9)
 	ax.set_xlabel('Frequency (MHz)')
 	ax.set_ylabel('Power (dBm)')
 	ax.set_title(f'Spectrum at {fileTime}')
 		
 	def update(frame):
 		ax.clear()
-		#ax.set_ylim(-55, -30)
+		ax.set_ylim(-80, 0)
 		ax.set_xlim(50,250)
 		ax.grid()
 		ax.set_xlabel('Frequency (MHz)')
@@ -122,6 +130,10 @@ def run():
 		ax.set_title(f'Spectrum at {fileTime}')
 		
 		calDict = getCalDict()
+		
+		# Get voltage and state from first sweep
+		first_sweep_voltage = None
+		first_sweep_state = None
 			
 		for sweepIdx in range(nrows):
 			a1, a2, a3, time, state, freq, vlt = readData(fileName, sweepIdx, True)
@@ -134,9 +146,13 @@ def run():
 			#dataList = toDB(voltsData)
 			
 			ax.scatter(adjAxis, dataList, marker = 'x' , c = colors, s=10)
-			if sweepIdx == 0:  #only displays first measure of voltage/state in the sweep
-				ax.annotate(f"{vlt} V", (225, -20), ha= "center")
-				ax.annotate(f"State: {state}", (225, -21), ha="center")
+			if sweepIdx == 0:  #capture first measure of voltage/state
+				first_sweep_voltage = vlt
+				first_sweep_state = state
+		
+		# Add legend with voltage and state info
+		ax.legend([f'Voltage: {first_sweep_voltage} V', f'State: {first_sweep_state}'], 
+		          loc='upper right', framealpha=0.9)
 	
 	v = anim.FuncAnimation(fig, update, frames=1, repeat=True, fargs=None, interval=100)
 	plt.show()

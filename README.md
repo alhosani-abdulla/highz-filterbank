@@ -43,7 +43,7 @@ Contains calibration routines for characterizing filterbank channels and system 
 Real-time data acquisition from the filterbank spectrometer.
 
 **Files:**
-- `ADHAT_c_subroutine_NO_SOCKET.c` - Data acquisition subroutine
+- `continuous_acq.c` - Continuous data acquisition subroutine (renamed from `ADHAT_c_subroutine_NO_SOCKET.c`)
 
 ## Hardware Requirements
 
@@ -121,7 +121,7 @@ gcc -o src/calibration/calib src/calibration/calibCode_v2.c \
     -lgpiod -lcfitsio -lpigpio -lrt -lpthread -lm
 
 # Data acquisition program
-gcc -o src/data_aquisition/acq src/data_aquisition/ADHAT_c_subroutine_NO_SOCKET.c \
+gcc -o src/data_aquisition/acq src/data_aquisition/continuous_acq.c \
     ../High-Precision_AD_HAT/c/lib/Driver/ADS1263.c \
     ../High-Precision_AD_HAT/c/lib/Config/DEV_Config.c \
     ../High-Precision_AD_HAT/c/lib/Config/RPI_sysfs_gpio.c \

@@ -7,7 +7,7 @@ ACQ and CALIB cannot run simultaneously (they share ADC hardware). The system ne
 
 ### Changes Made
 
-1. **`src/data_aquisition/ADHAT_c_subroutine_NO_SOCKET.c`**
+1. **`src/data_aquisition/continuous_acq.c`**
    - Added `state2_sweeps_collected` counter and `STATE2_MAX_SWEEPS` constant (default: 3)
    - Modified state 2 detection logic:
      - OLD: Immediately exit when state 2 detected (no data collected)
@@ -48,7 +48,7 @@ State 2 begins (~40-50 seconds total required)
 
 ### Adjust Number of Sweeps on State 2
 
-Edit `src/data_aquisition/ADHAT_c_subroutine_NO_SOCKET.c`:
+Edit `src/data_aquisition/continuous_acq.c`:
 
 ```c
 const int STATE2_MAX_SWEEPS = 3;   // Change this number

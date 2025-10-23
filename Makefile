@@ -57,7 +57,7 @@ $(CALIB_TARGET): $(SRC_CALIB)/filterSweep.c $(ADHAT_SOURCES)
 	@echo "✓ Calibration binary created: $(CALIB_TARGET)"
 
 # Data acquisition program
-$(ACQ_TARGET): $(SRC_ACQ)/ADHAT_c_subroutine_NO_SOCKET.c $(ADHAT_SOURCES)
+$(ACQ_TARGET): $(SRC_ACQ)/continuous_acq.c $(ADHAT_SOURCES)
 	@echo "Compiling data acquisition program..."
 	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 	@echo "✓ Data acquisition binary created: $(ACQ_TARGET)"

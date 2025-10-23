@@ -4,7 +4,7 @@
 
 This system coordinates two measurement programs that **cannot run simultaneously** (they share ADC hardware):
 
-1. **Continuous Data Acquisition** (`bin/acq`) - Runs on all states, collects frequency sweeps
+1. **Continuous Data Acquisition** (`bin/acq`) - Runs on all states, collects frequency sweeps (source: `src/data_aquisition/continuous_acq.c`)
 2. **Filter Sweep Calibration** (`bin/calib`) - Runs only on state 2 after acq finishes
 
 The programs are synchronized using the system `state` value and a sweep counter in the acq program.
@@ -63,7 +63,7 @@ Press `Ctrl+C` to stop the synchronized operation.
 
 ### Adjust State 2 Sweep Count
 
-Edit `src/data_aquisition/ADHAT_c_subroutine_NO_SOCKET.c`:
+Edit `src/data_aquisition/continuous_acq.c`:
 
 ```c
 const int STATE2_MAX_SWEEPS = 3;   // Number of sweeps to collect on state 2

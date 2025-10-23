@@ -43,6 +43,20 @@ const double FREQ_STEP = 2.0;       // Frequency increment per step (MHz)
 /* Output Directory Configuration */
 const char *OUTPUT_DIR = "/media/peterson/INDURANCE/Data";  // Directory for saving FITS files
 
+/* Performance Monitoring Configuration */
+const int ENABLE_TIMING_OUTPUT = 1;           // Set to 1 to enable sweep timing output, 0 to disable
+const int ENABLE_VERBOSE_MEASUREMENT = 0;     // Set to 1 to enable per-measurement debug output, 0 to disable
+const int ENABLE_VERBOSE_SWEEP = 1;           // Set to 1 to enable per-sweep debug output, 0 to disable
+
+/* Voltage Divider Configuration */
+const double VOLTAGE_DIVIDER_FACTOR = 11.0;   // Voltage divider factor for system voltage measurement (actual voltage = ADC reading * factor)
+
+// Configurable timing parameters
+// All times are in milliseconds unless noted otherwise.
+int LO_SETTLE_US = 50;        // usleep in GET_DATA (50 microseconds)
+int PULSE_LOW_US = 50;        // gpioDelay for low pulse when incrementing (microseconds)
+int INTER_SWEEP_WAIT_S = 0.1;   // seconds between sweeps for LO stabilization
+
 /* Global Variables for Frequency Control */
 double LO_FREQ = FREQ_MIN;     // Local Oscillator starting frequency (initialized to FREQ_MIN)
 
@@ -129,12 +143,12 @@ void Handler(int signo) {
     // Reset GPIO pins to idle state
     gpioWrite(GPIO_FREQ_INCREMENT, 1);
     gpioWrite(GPIO_FREQ_RESET, 1);
-    gpioDelay(5000);
+    gpioDelay(LO_SETTLE_US);
     printf("✓ GPIO pins reset to idle state\n");
 
     // Power down LO board
     gpioWrite(GPIO_LO_POWER, 0);
-    gpioDelay(5000);
+    gpioDelay(LO_SETTLE_US);
     printf("✓ LO board powered down\n");
 }
 
@@ -244,30 +258,39 @@ int READ_SWITCH_STATE(void) {
         double exponentiation = exp2(i-7);
         state = state + on_or_off * exponentiation;
 
-        // Print diagnostic information
-        printf("Pin %d: ADC value = %llu, Voltage = %.6f V\n", i, value, vlt);
+        // Print diagnostic information (only if verbose measurement output enabled)
+        if (ENABLE_VERBOSE_MEASUREMENT) {
+            printf("Pin %d: ADC value = %llu, Voltage = %.6f V\n", i, value, vlt);
+        }
     }
     
-    printf("STATE: %d\n", state);
+    if (ENABLE_VERBOSE_MEASUREMENT) {
+        printf("STATE: %d\n", state);
+    }
     return state;
 }
 
 /*
  * Reads system voltage from ADC channel 7 on HAT 23
- * Returns: Voltage value in volts
+ * Returns: Actual system voltage in volts (after applying voltage divider factor)
  */
 double READ_SYSTEM_VOLTAGE(void) {
     UDOUBLE vltReading = ADS1263_GetChannalValue(7, 23, get_DRDYPIN(23));
-    double sysVoltage;
+    double adcVoltage;
     
     if ((vltReading >> 31) == 1){
-        sysVoltage = 5 * 2 - vltReading/2147483648.0 * 5;
+        adcVoltage = 5 * 2 - vltReading/2147483648.0 * 5;
     }
     else {
-        sysVoltage = vltReading/2147483647.8 * 5;
+        adcVoltage = vltReading/2147483647.8 * 5;
     }
     
-    printf("Sys Voltage = %.6f V\n", sysVoltage);
+    // Apply voltage divider factor to get actual system voltage
+    double sysVoltage = adcVoltage * VOLTAGE_DIVIDER_FACTOR;
+    
+    if (ENABLE_VERBOSE_SWEEP) {
+        printf("Sys Voltage (ADC) = %.6f V, Actual Sys Voltage = %.6f V\n", adcVoltage, sysVoltage);
+    }
     return sysVoltage;
 }
 
@@ -314,24 +337,26 @@ int INCREMENT_LO_FREQUENCY(void) {
     if (LO_FREQ < FREQ_MAX - FREQ_STEP){
         // Increment to next frequency
         gpioWrite(GPIO_FREQ_INCREMENT, 0); // Falling edge triggers Arduino
+        gpioDelay(PULSE_LOW_US);           // Short delay to ensure proper timing
+        gpioWrite(GPIO_FREQ_INCREMENT, 1); // Return GPIO pins to idle HIGH state
+        gpioDelay(LO_SETTLE_US);           // Short delay to ensure proper timing
         LO_FREQ = LO_FREQ + FREQ_STEP;
     }
     else {
         // Reset to minimum frequency after reaching maximum
-        gpioWrite(GPIO_FREQ_RESET, 0); // Falling edge triggers Arduino reset
-        usleep(2000); // Wait 2ms for reset
+        gpioWrite(GPIO_FREQ_RESET, 0);     // Falling edge triggers Arduino reset
+        gpioDelay(PULSE_LOW_US);           // Short delay to ensure proper timing
+        gpioWrite(GPIO_FREQ_RESET, 1);     // Return GPIO pins to idle HIGH state
+        sleep(INTER_SWEEP_WAIT_S);
         LO_FREQ = FREQ_MIN;
     }
     
-    usleep(500); // Wait 0.5ms for LO to stabilize
-    
-    // Return GPIO pins to idle HIGH state
-    gpioWrite(GPIO_FREQ_INCREMENT, 1);
-    gpioWrite(GPIO_FREQ_RESET, 1);
-    
     end_time = clock();
     cpu_time_used = ((double) (end_time - start_time)) / CLOCKS_PER_SEC;
-    printf("TIME TAKEN TO SET NEXT LO FREQ: %f\n", cpu_time_used);
+    
+    if (ENABLE_VERBOSE_MEASUREMENT) {
+        printf("TIME TAKEN TO SET NEXT LO FREQ: %f\n", cpu_time_used);
+    }
     
     return 0;
 }
@@ -370,9 +395,11 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
         return -1;
     }
     
-    printf("##########################################\n");
-    printf("MEASURING AT LO FREQ: %lf MHz\n", LO_FREQ);
-    printf("##########################################\n");
+    if (ENABLE_VERBOSE_MEASUREMENT) {
+        printf("##########################################\n");
+        printf("MEASURING AT LO FREQ: %lf MHz\n", LO_FREQ);
+        printf("##########################################\n");
+    }
 
     // Step 3: Collect ADC data from all three AD HATs at current frequency
     if (COLLECT_ADC_DATA(&input_struct->data[i]) != 0) {
@@ -650,12 +677,12 @@ void CLEANUP_AND_SHUTDOWN(void)
     // Reset GPIO pins to idle state
     gpioWrite(GPIO_FREQ_INCREMENT, 1);
     gpioWrite(GPIO_FREQ_RESET, 1);
-    gpioDelay(5000);
+    gpioDelay(LO_SETTLE_US);
     printf("✓ GPIO pins reset to idle state\n");
 
     // Power down LO board
     gpioWrite(GPIO_LO_POWER, 0);
-    gpioDelay(5000);
+    gpioDelay(LO_SETTLE_US);
     printf("✓ LO board powered down\n");
     
     // Terminate pigpio
@@ -677,7 +704,9 @@ void* writer_thread_func(void *arg) {
     int nrows = args->nrows;
 
     while (1) {
-        printf("NOT SAVING YET...\n");
+        if (ENABLE_VERBOSE_SWEEP) {
+            printf("NOT SAVING YET...\n");
+        }
         pthread_mutex_lock(&buffer_mutex);
         while (buffer_to_write == 0 && !exit_flag) {
             pthread_cond_wait(&buffer_ready_cond, &buffer_mutex);
@@ -701,17 +730,21 @@ void* writer_thread_func(void *arg) {
             //printf("buffer ptr in if statement %p\n", (void *)buf);
             //printf("buffer itself in if statement %p\n", (void *)&buf);
             
-            printf("ABOUT TO SAVE DATA...\n");
+            if (ENABLE_VERBOSE_SWEEP) {
+                printf("ABOUT TO SAVE DATA...\n");
+            }
             clock_t start_time, end_time;
             double cpu_time_used;
         
             start_time = clock();
-            end_time = clock();
-            
-            //usleep(1000000);
-        
+                    
             int status = SAVE_OUTPUT(buf, nrows); //removed filename argument
-            printf("STATUS: %d\n", status);
+            
+            end_time = clock();
+
+            if (ENABLE_VERBOSE_SWEEP) {
+                printf("STATUS: %d\n", status);
+            }
             
             if (status != 0) {
                 printf("Error saving FITS data: %d\n", status);
@@ -765,18 +798,18 @@ int main(int argc, char **argv) {
     // Initialize: FREQ_INCREMENT and FREQ_RESET idle HIGH, LO_POWER LOW (board off)
     gpioWrite(GPIO_FREQ_INCREMENT, 1);
     gpioWrite(GPIO_FREQ_RESET, 1);
-    gpioDelay(5000); // 5 ms settle
+    gpioDelay(LO_SETTLE_US); // 5 ms settle
     
     // Turn LO board ON and reset frequency counter
     gpioWrite(GPIO_LO_POWER, 1);  // Power on LO board
-    gpioDelay(10000); // 10 ms for LO board to stabilize
+    gpioDelay(LO_SETTLE_US); // 10 ms for LO board to stabilize
     
     // Reset frequency counter to starting position
     gpioWrite(GPIO_FREQ_RESET, 0);  // Falling edge to reset
-    gpioDelay(5000); // 5 ms LOW pulse
+    gpioDelay(PULSE_LOW_US); // 5 ms LOW pulse
     gpioWrite(GPIO_FREQ_RESET, 1);  // Return to idle HIGH
-    gpioDelay(5000); // 5 ms settle
-    
+    gpioDelay(LO_SETTLE_US); // 5 ms settle
+
     sleep(1); // Additional 1 second delay to ensure LO stability
 
     printf("Starting main data acquisition loop...\n");
@@ -792,6 +825,17 @@ int main(int argc, char **argv) {
     int row_index = 0;
     int state2_detected_in_current_sweep = 0;
     
+    // Sweep timing variables
+    clock_t sweep_start_time, sweep_end_time, program_start_time;
+    double sweep_time_used;
+    int sweep_count = 0;
+    double total_sweep_time = 0.0;
+    double min_sweep_time = -1.0;
+    double max_sweep_time = 0.0;
+    
+    // Start program timer
+    program_start_time = clock();
+    
     while (!exit_flag) {
         clock_t start_time, end_time;
         double cpu_time_used;
@@ -804,6 +848,17 @@ int main(int argc, char **argv) {
         if (row_index == 0) {
             active_buffer->sys_voltage = READ_SYSTEM_VOLTAGE();
             state2_detected_in_current_sweep = 0;  // Reset flag for new sweep
+            
+            // Start timing this sweep (always record time if timing enabled)
+            if (ENABLE_TIMING_OUTPUT || ENABLE_VERBOSE_SWEEP) {
+                sweep_start_time = clock();
+            }
+            
+            if (ENABLE_VERBOSE_SWEEP) {
+                printf("\n========================================\n");
+                printf("Starting sweep #%d (LO freq: %.1f MHz)\n", sweep_count + 1, LO_FREQ);
+                printf("========================================\n");
+            }
         }
         
         int result = GET_DATA(active_buffer, row_index);
@@ -829,6 +884,30 @@ int main(int argc, char **argv) {
 
         // Check if sweep is complete
         if (row_index >= nrows) {
+            // Calculate sweep timing and statistics
+            sweep_end_time = clock();
+            sweep_time_used = ((double) (sweep_end_time - sweep_start_time)) / CLOCKS_PER_SEC;
+            sweep_count++;
+            
+            // Update statistics
+            total_sweep_time += sweep_time_used;
+            if (min_sweep_time < 0 || sweep_time_used < min_sweep_time) {
+                min_sweep_time = sweep_time_used;
+            }
+            if (sweep_time_used > max_sweep_time) {
+                max_sweep_time = sweep_time_used;
+            }
+            
+            if (ENABLE_TIMING_OUTPUT) {
+                printf("\n========================================\n");
+                printf("Sweep #%d COMPLETED\n", sweep_count);
+                printf("  Total measurements: %d\n", nrows);
+                printf("  Frequency range: %.1f - %.1f MHz\n", FREQ_MIN, FREQ_MAX);
+                printf("  Sweep duration: %.3f seconds\n", sweep_time_used);
+                printf("  Average time per measurement: %.4f seconds\n", sweep_time_used / nrows);
+                printf("========================================\n");
+            }
+            
             // Signal writer thread to save this buffer
             pthread_mutex_lock(&buffer_mutex);
             buffer_to_write = current_buffer;
@@ -861,7 +940,9 @@ int main(int argc, char **argv) {
         //printf("LOOP ENDED: %ld\n", (long)end_time);
         
         cpu_time_used = ((double) (end_time-start_time)) / CLOCKS_PER_SEC;
-        printf("LOOP EXECUTION TIME: %f seconds\n", cpu_time_used);
+        if (ENABLE_VERBOSE_MEASUREMENT) {
+            printf("LOOP EXECUTION TIME: %f seconds\n", cpu_time_used);
+        }
     }
 
     // Clean shutdown sequence - executed whether exiting normally or via Ctrl+C
@@ -890,10 +971,35 @@ int main(int argc, char **argv) {
     printf("\nStep 3/4: Shutting down hardware...\n");
     CLEANUP_AND_SHUTDOWN();
     
-    // Step 4: Final summary
-    printf("\nStep 4/4: Final summary\n");
-    printf("  Total state 2 sweeps collected: %d\n", state2_sweeps_collected);
-    printf("  Program terminated successfully\n");
+    // Step 4: Final summary with statistics
+    clock_t program_end_time = clock();
+    double total_program_time = ((double) (program_end_time - program_start_time)) / CLOCKS_PER_SEC;
+    
+    printf("\n========================================\n");
+    printf("Step 4/4: Final Statistics Summary\n");
+    printf("========================================\n");
+    printf("Data Collection:\n");
+    printf("  Total sweeps completed: %d\n", sweep_count);
+    printf("  State 2 sweeps collected: %d\n", state2_sweeps_collected);
+    printf("  Measurements per sweep: %d\n", nrows);
+    printf("  Total measurements: %d\n", sweep_count * nrows);
+    printf("\n");
+    printf("Timing Statistics:\n");
+    printf("  Total program runtime: %.2f seconds (%.2f minutes)\n", 
+           total_program_time, total_program_time / 60.0);
+    
+    if (sweep_count > 0) {
+        printf("  Total sweep time: %.2f seconds\n", total_sweep_time);
+        printf("  Average sweep duration: %.3f seconds\n", total_sweep_time / sweep_count);
+        printf("  Minimum sweep duration: %.3f seconds\n", min_sweep_time);
+        printf("  Maximum sweep duration: %.3f seconds\n", max_sweep_time);
+        printf("  Average time per measurement: %.4f seconds\n", 
+               total_sweep_time / (sweep_count * nrows));
+    }
+    
+    printf("\n");
+    printf("Program terminated successfully\n");
+    printf("========================================\n");
 
     printf("\n========================================\n");
     printf("Program ended cleanly.\n");

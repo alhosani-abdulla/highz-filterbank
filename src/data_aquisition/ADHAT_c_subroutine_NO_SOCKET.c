@@ -41,7 +41,7 @@ const double FREQ_STEP = 2.0;       // Frequency increment per step (MHz)
 #define TOTAL_STEPS ((int)(((FREQ_MAX - FREQ_MIN) / FREQ_STEP) + 1))  // Dynamically calculated: (850-650)/2+1 = 101 measurements per sweep
 
 /* Output Directory Configuration */
-const char *OUTPUT_DIR = "/home/peterson/Continuous_Sweep";  // Directory for saving FITS files
+const char *OUTPUT_DIR = "/media/peterson/INDURANCE/Data";  // Directory for saving FITS files
 
 /* Global Variables for Frequency Control */
 double LO_FREQ = FREQ_MIN;     // Local Oscillator starting frequency (initialized to FREQ_MIN)

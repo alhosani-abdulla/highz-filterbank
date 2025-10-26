@@ -1,0 +1,60 @@
+{
+  "measurement_date": "YYYY-MM-DD",
+  "measured_by": "Your Name",
+  "equipment": {
+    "vna": "NanoVNA-H4",
+    "vna_firmware": "v1.x.x",
+    "cables": "SMA, <1m length",
+    "calibration_kit": "SMA OSL (short-open-load)",
+    "calibration_date": "YYYY-MM-DD"
+  },
+  "conditions": {
+    "temperature_C": 22,
+    "humidity_percent": 45,
+    "location": "Lab bench",
+    "notes": "System at room temperature, steady state"
+  },
+  "measurement_parameters": {
+    "start_freq_MHz": 900,
+    "stop_freq_MHz": 960,
+    "num_points": 201,
+    "if_bandwidth_Hz": 1000,
+    "averaging": 1,
+    "output_power_dBm": 0,
+    "format": "Touchstone S2P"
+  },
+  "system_configuration": {
+    "lo_model": "Your LO model",
+    "splitter_8way": "Mini-Circuits ZB8PD-4+",
+    "splitter_4way": "Mini-Circuits ZB4PD-3+",
+    "filter_type": "Custom cavity bandpass filters",
+    "filter_bandwidth_MHz": 0.2,
+    "filter_centers": "904.0 to 956.0 MHz (2.6 MHz steps)",
+    "detector_model": "Log detector model"
+  },
+  "measurements": {
+    "filters_measured": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+    "total_filters": 21,
+    "measurement_order": "Sequential 0-20",
+    "notes": "Measured end-to-end from LO output to detector input (after filter)"
+  },
+  "quality_checks": {
+    "all_files_present": true,
+    "s21_in_band_range_dB": [-25, -15],
+    "filter_passbands_visible": true,
+    "smooth_frequency_response": true,
+    "no_cable_resonances": true,
+    "dashboard_loads_successfully": true
+  },
+  "notes": [
+    "Include any observations during measurement",
+    "Note any anomalies or special conditions",
+    "Document any issues with specific filters",
+    "Record any changes to hardware configuration"
+  ],
+  "future_work": [
+    "Temperature-dependent measurements",
+    "Periodic validation schedule",
+    "Comparison with previous measurements"
+  ]
+}

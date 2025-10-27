@@ -198,8 +198,8 @@ def get_per_filter_calibration():
             return None
         
         # Power levels (actual measured output from LO)
-        low_power_dbm = -10.0   # -4dBm setting = ~-10dBm actual
-        high_power_dbm = -1.0   # +5dBm setting = ~-1dBm actual
+        low_power_dbm = -25.0   # -4dBm setting = ~-10dBm actual
+        high_power_dbm = -16.0   # +5dBm setting = ~-1dBm actual
         
         # Load S21 corrections if available
         s21_corrections = load_s21_corrections()

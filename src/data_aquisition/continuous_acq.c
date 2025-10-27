@@ -36,7 +36,7 @@ const int GPIO_LO_POWER = 6;        // LO board power control (HIGH=ON, LOW=OFF)
 
 /* Frequency Sweep Parameters - Data Acquisition: 650-850 MHz, 2 MHz steps */
 const double FREQ_MIN = 650.0;      // Starting frequency (MHz)
-const double FREQ_MAX = 850.0;      // Ending frequency (MHz)
+const double FREQ_MAX = 936.0;      // Ending frequency (MHz)
 const double FREQ_STEP = 2.0;       // Frequency increment per step (MHz)
 #define TOTAL_STEPS ((int)(((FREQ_MAX - FREQ_MIN) / FREQ_STEP) + 1))  // Dynamically calculated: (850-650)/2+1 = 101 measurements per sweep
 

@@ -18,78 +18,112 @@
 #
 # The cycle runs continuously until manually stopped (Ctrl+C)
 #
+# NOTE: Both programs now use hardcoded parameters defined in their source files:
+#   - acq: 650-850 MHz, 2 MHz steps (101 measurements/sweep)
+#   - calib: 900-960 MHz, 0.2 MHz steps (301 measurements/sweep)
+#
+# LOGGING:
+#   All output is logged to: /media/peterson/INDURANCE/Logs/synchronized_sweep.log
+#   Use 'tail -f /media/peterson/INDURANCE/Logs/synchronized_sweep.log' to monitor
+#
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Setup logging
+LOG_DIR="/media/peterson/INDURANCE/Logs"
+LOG_FILE="$LOG_DIR/synchronized_sweep.log"
+
+# Create log directory if it doesn't exist
+if [ ! -d "$LOG_DIR" ]; then
+    mkdir -p "$LOG_DIR"
+    chmod 755 "$LOG_DIR"
+fi
+
+# Function to log with timestamp
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+# Color codes for output (only use when outputting to terminal)
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m' # No Color
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+fi
 
 # Paths to executables
 CONTINUOUS_ACQ="/home/peterson/highz/highz-filterbank/bin/acq"
 FILTER_SWEEP="/home/peterson/highz/highz-filterbank/bin/calib"
 
-# Parameters for continuous acquisition
-NROWS=101  # Number of rows per buffer
-START_FREQ=648
-END_FREQ=850
-
 # Cycle counter
 CYCLE=0
 
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}Synchronized Spectrometer Control${NC}"
-echo -e "${BLUE}========================================${NC}"
-echo ""
-echo "Continuous acquisition: $CONTINUOUS_ACQ"
-echo "Filter sweep: $FILTER_SWEEP"
-echo "Parameters: nrows=$NROWS, freq range=$START_FREQ-$END_FREQ MHz"
-echo ""
-echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
-echo ""
+# Log startup
+log "========================================="
+log "Synchronized Spectrometer Control Starting"
+log "========================================="
+log "PID: $$"
+log "User: $(whoami)"
+log "Log file: $LOG_FILE"
+
+log ""
+log "Continuous acquisition: $CONTINUOUS_ACQ"
+log "  • Data: 650-850 MHz, 2 MHz steps (101 measurements/sweep)"
+log "  • Exits after STATE2_MAX_SWEEPS sweeps on state 2"
+log ""
+log "Filter sweep calibration: $FILTER_SWEEP"
+log "  • Calibration: 900-960 MHz, 0.2 MHz steps (301 measurements/sweep)"
+log "  • Dual power sweep: +5 dBm → -4 dBm"
+log ""
+log "Press Ctrl+C to stop"
+log ""
 
 # Trap Ctrl+C to exit cleanly
-trap 'echo -e "\n${RED}Stopping synchronized sweep...${NC}"; exit 0' INT
+trap 'log ""; log "Stopping synchronized sweep..."; log "Shutdown at $(date)"; exit 0' INT TERM
 
 while true; do
     CYCLE=$((CYCLE + 1))
     
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}Starting Cycle $CYCLE${NC}"
-    echo -e "${GREEN}========================================${NC}"
-    echo ""
+    log "========================================"
+    log "Starting Cycle $CYCLE"
+    log "========================================"
+    log ""
     
     # Phase 1: Run continuous acquisition until state 2 is detected
-    echo -e "${BLUE}Phase 1: Continuous Data Acquisition${NC}"
-    echo "Running: $CONTINUOUS_ACQ $NROWS $START_FREQ $END_FREQ"
-    echo ""
+    log "Phase 1: Continuous Data Acquisition"
+    log "Running: sudo $CONTINUOUS_ACQ"
+    log ""
     
-    $CONTINUOUS_ACQ $NROWS $START_FREQ $END_FREQ
-    ACQ_EXIT_CODE=$?
+    # Run acq and capture all output to log
+    sudo $CONTINUOUS_ACQ 2>&1 | tee -a "$LOG_FILE"
+    ACQ_EXIT_CODE=${PIPESTATUS[0]}
     
-    echo ""
-    echo -e "${YELLOW}Continuous acquisition ended (exit code: $ACQ_EXIT_CODE)${NC}"
-    echo ""
+    log ""
+    log "Continuous acquisition ended (exit code: $ACQ_EXIT_CODE)"
+    log ""
     
     # Small delay for system to stabilize
     sleep 2
     
     # Phase 2: Run filter sweep calibration
-    echo -e "${BLUE}Phase 2: Filter Sweep Calibration${NC}"
-    echo "Running: $FILTER_SWEEP"
-    echo ""
+    log "Phase 2: Filter Sweep Calibration"
+    log "Running: sudo $FILTER_SWEEP"
+    log ""
     
-    sudo $FILTER_SWEEP
-    CALIB_EXIT_CODE=$?
+    # Run calib and capture all output to log
+    sudo $FILTER_SWEEP 2>&1 | tee -a "$LOG_FILE"
+    CALIB_EXIT_CODE=${PIPESTATUS[0]}
     
-    echo ""
-    echo -e "${YELLOW}Filter sweep calibration ended (exit code: $CALIB_EXIT_CODE)${NC}"
-    echo ""
+    log ""
+    log "Filter sweep calibration ended (exit code: $CALIB_EXIT_CODE)"
+    log ""
     
-    # Small delay before next cycle
-    echo -e "${YELLOW}Waiting 5 seconds before next cycle...${NC}"
-    sleep 5
-    echo ""
+    log "Cycle $CYCLE complete."
     
 done

@@ -923,7 +923,7 @@ int main(int argc, char **argv) {
                 printf("========================================\n");
                 
                 // Check if we've collected enough sweeps on state 2
-                if (state2_sweeps_collected >= STATE2_MAX_SWEEPS) {
+                if (state2_sweeps_collected > STATE2_MAX_SWEEPS) {
                     printf("\n========================================\n");
                     printf("STATE 2: Collected %d complete sweeps\n", state2_sweeps_collected);
                     printf("All required data collected. Exiting...\n");

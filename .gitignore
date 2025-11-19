@@ -83,3 +83,6 @@ wheels/
 *.egg
 .DS_Store
 =======
+
+# Image files
+*.png

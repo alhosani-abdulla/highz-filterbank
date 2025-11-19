@@ -102,7 +102,7 @@ pthread_cond_t buffer_ready_cond = PTHREAD_COND_INITIALIZER;  // Signals buffer 
 int buffer_to_write = 0;   // 0 = none, 1 = bufferA, 2 = bufferB
 volatile sig_atomic_t exit_flag = 0;  // Program termination flag (volatile for signal safety)
 int state2_sweeps_collected = 0;  // Counter for sweeps collected on state 2
-const int STATE2_MAX_SWEEPS = 3;   // Number of sweeps to collect on state 2 before transitioning to calib
+const int STATE2_MAX_SWEEPS = 6;   // Number of sweeps to collect on state 2 before transitioning to calib
 
 /* Global thread handle for cleanup in signal handler */
 pthread_t global_writer_thread;

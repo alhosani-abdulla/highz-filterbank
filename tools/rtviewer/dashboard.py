@@ -198,8 +198,8 @@ def get_per_filter_calibration():
             return None
         
         # Power levels (actual measured output from LO)
-        low_power_dbm = -25.0   # -4dBm setting = ~-10dBm actual
-        high_power_dbm = -16.0   # +5dBm setting = ~-1dBm actual
+        low_power_dbm = -45.0   # -4dBm setting = ~-10dBm actual
+        high_power_dbm = -36.0   # +5dBm setting = ~-1dBm actual
         
         # Load S21 corrections if available
         s21_corrections = load_s21_corrections()
@@ -495,7 +495,7 @@ def update_graph(n, paused, paused_file):
     
     # Create voltage plot with separate trace for each filter
     voltage_fig = go.Figure()
-    for filt_num in range(21):
+    for filt_num in range(21)[1:20]:
         if filt_num in filter_data:
             voltage_fig.add_trace(go.Scatter(
                 x=filter_data[filt_num]['freq'],
@@ -514,8 +514,8 @@ def update_graph(n, paused, paused_file):
         title=f"Raw Detector Voltages - {metadata['timestamp']}",
         xaxis_title="Frequency (MHz)",
         yaxis_title="Voltage (V)",
-        xaxis_range=[50, 250],
-        yaxis_range=[0.5, 2.5],
+        xaxis_range=[0, 400],
+        yaxis_range=[1.2, 2.2],
         template="plotly_white",
         hovermode='closest',
         showlegend=False,
@@ -525,7 +525,7 @@ def update_graph(n, paused, paused_file):
     
     # Create power plot with separate trace for each filter
     power_fig = go.Figure()
-    for filt_num in range(21):
+    for filt_num in range(21)[1:20]:
         if filt_num in filter_data:
             power_fig.add_trace(go.Scatter(
                 x=filter_data[filt_num]['freq'],
@@ -544,8 +544,8 @@ def update_graph(n, paused, paused_file):
         title=f"Calibrated Power Spectrum - {metadata['timestamp']}",
         xaxis_title="Frequency (MHz)",
         yaxis_title="Power (dBm)",
-        yaxis_range=[-80, 0],
-        xaxis_range=[50, 250],
+        yaxis_range=[-80, -30],
+        xaxis_range=[0, 400],
         template="plotly_white",
         hovermode='closest',
         showlegend=False,
@@ -554,7 +554,8 @@ def update_graph(n, paused, paused_file):
     )
     
     # Status information
-    if filter_cal:
+    # if filter_cal:
+    if False:
         num_calibrated = len(filter_cal)
         # Check how many have S21 correction
         num_with_s21 = sum(1 for f in filter_cal.values() if f.get('s21_db', 0) != 0)

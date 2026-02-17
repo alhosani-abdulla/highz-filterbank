@@ -1,0 +1,30 @@
+Filterbank RPI GPIO Pins Usage:
+
+RTC I2C Data: 2
+RTC I2C Clk: 3
+Acq_LO_Freq_Inc: 4
+Acq_LO_Freq_Reset: 5
+Acq_LO_Power: 6
+Tone_LO_Freq_Inc: 13
+Tone_LO_Freq_Reset: 19
+Tone_LO_Power: 26
+ADHAT Reset: 18
+ADHAT1_DRDY: 12
+ADHAT2_DRDY: 22
+ADHAT3_DRDY: 23
+State_CTRL_Bit0: 21
+State_CTRL_Bit1: 24
+State_CTRL_BIT2: 27
+
+SPI0 Bus Pins GPIO 7-11:
+SCLK (Clock): GPIO 11 (Physical Pin 23)
+MOSI (Master Out Slave In): GPIO 10 (Physical Pin 19)
+MISO (Master In Slave Out): GPIO 9 (Physical Pin 21)
+CE0 (Chip Enable 0): GPIO 8 (Physical Pin 24)
+CE1 (Chip Enable 1): GPIO 7 (Physical Pin 26)
+
+Available Pins (but might have issues):
+GPIO 17:
+GPIO 25:
+GPIO 20:
+GPIO 16:

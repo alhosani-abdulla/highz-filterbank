@@ -37,13 +37,14 @@ ADHAT_SOURCES = $(ADHAT_DIR)/lib/Driver/ADS1263.c \
 
 CALIB_TARGET = $(BIN_DIR)/calib
 ACQ_TARGET = $(BIN_DIR)/acq
+STATE_CTRL_TARGET = $(BIN_DIR)/state_ctrl
 
 # ============================================================================
 # Build Rules
 # ============================================================================
 
 # Default target - build everything
-all: $(BIN_DIR) $(CALIB_TARGET) $(ACQ_TARGET)
+all: $(BIN_DIR) $(CALIB_TARGET) $(ACQ_TARGET) $(STATE_CTRL_TARGET)
 
 # Create bin directory if it doesn't exist
 $(BIN_DIR):
@@ -62,6 +63,12 @@ $(ACQ_TARGET): $(SRC_ACQ)/continuous_acq.c $(ADHAT_SOURCES)
 	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 	@echo "✓ Data acquisition binary created: $(ACQ_TARGET)"
 
+# State control program
+$(STATE_CTRL_TARGET): $(SRC_ACQ)/state_ctrl.c $(ADHAT_SOURCES)
+	@echo "Compiling state control program..."
+	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
+	@echo "✓ State control binary created: $(STATE_CTRL_TARGET)"
+
 # ============================================================================
 # Utility Targets
 # ============================================================================
@@ -72,10 +79,13 @@ calib: $(BIN_DIR) $(CALIB_TARGET)
 # Build only data acquisition
 acq: $(BIN_DIR) $(ACQ_TARGET)
 
+# Build only state control
+state_ctrl: $(BIN_DIR) $(STATE_CTRL_TARGET)
+
 # Clean compiled binaries
 clean:
 	@echo "Cleaning up..."
-	@rm -f $(CALIB_TARGET) $(ACQ_TARGET)
+	@rm -f $(CALIB_TARGET) $(ACQ_TARGET) $(STATE_CTRL_TARGET)
 	@if [ -d $(BIN_DIR) ] && [ -z "$$(ls -A $(BIN_DIR))" ]; then \
 		rm -rf $(BIN_DIR); \
 		echo "✓ Removed empty bin directory"; \
@@ -93,6 +103,7 @@ help:
 	@echo "  all       - Build both calibration and data acquisition programs (default)"
 	@echo "  calib     - Build only calibration program"
 	@echo "  acq       - Build only data acquisition program"
+	@echo "  state_ctrl - Build only state control program"
 	@echo "  clean     - Remove compiled binaries"
 	@echo "  rebuild   - Clean and rebuild everything"
 	@echo "  help      - Display this help message"
@@ -100,15 +111,16 @@ help:
 	@echo "Usage examples:"
 	@echo "  make              # Build everything"
 	@echo "  make calib        # Build calibration only"
+	@echo "  make state_ctrl   # Build state control only"
 	@echo "  make clean        # Remove binaries"
 	@echo "  make rebuild      # Clean and rebuild"
 	@echo ""
 	@echo "Output binaries:"
 	@echo "  $(CALIB_TARGET)"
 	@echo "  $(ACQ_TARGET)"
-
+	@echo "  $(STATE_CTRL_TARGET)"
 # ============================================================================
 # Phony Targets (not actual files)
 # ============================================================================
 
-.PHONY: all calib acq clean rebuild help
+.PHONY: all calib acq state_ctrl clean rebuild help

@@ -29,12 +29,17 @@
 /* Number of ADC channels to read from each AD HAT */
 #define ChannelNumber 7
 
+/* GPIO pin definitions AD HATs (BCM numbering) */
+const int ADHAT1_DRYDPIN = 12;  // ADC data ready pin for first AD HAT
+const int ADHAT2_DRYDPIN = 22;  // ADC data ready pin for second AD HAT
+const int ADHAT3_DRYDPIN = 23;  // ADC data ready pin for third AD HAT
+
 /* GPIO pin definitions for Arduino Nano control (BCM numbering) */
 const int GPIO_FREQ_INCREMENT = 4;  // Increment frequency (falling edge trigger)
 const int GPIO_FREQ_RESET = 5;      // Reset frequency sweep (falling edge trigger)
 const int GPIO_LO_POWER = 6;        // LO board power control (HIGH=ON, LOW=OFF)
 
-/* Frequency Sweep Parameters - Data Acquisition: 650-850 MHz, 2 MHz steps */
+/* Frequency Sweep Parameters - Data Acquisition: 650-936 MHz, 2 MHz steps */
 const double FREQ_MIN = 650.0;      // Starting frequency (MHz)
 const double FREQ_MAX = 936.0;      // Ending frequency (MHz)
 const double FREQ_STEP = 2.0;       // Frequency increment per step (MHz)
@@ -225,9 +230,9 @@ int COLLECT_ADC_DATA(GetAllValues *data_row) {
     
     UBYTE ChannelList[ChannelNumber] = {0,1,2,3,4,5,6};
     
-    ADS1263_GetAll(ChannelList, data_row->ADHAT_1, ChannelNumber, 12, get_DRDYPIN(12));
-    ADS1263_GetAll(ChannelList, data_row->ADHAT_2, ChannelNumber, 22, get_DRDYPIN(22));
-    ADS1263_GetAll(ChannelList, data_row->ADHAT_3, ChannelNumber, 23, get_DRDYPIN(23));
+    ADS1263_GetAll(ChannelList, data_row->ADHAT_1, ChannelNumber, ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
+    ADS1263_GetAll(ChannelList, data_row->ADHAT_2, ChannelNumber, ADHAT2_DRYDPIN, get_DRDYPIN(ADHAT2_DRYDPIN));
+    ADS1263_GetAll(ChannelList, data_row->ADHAT_3, ChannelNumber, ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
     
     return 0;
 }
@@ -240,7 +245,7 @@ int READ_SWITCH_STATE(void) {
     int state = 0;
     
     for(int i = 7; i < 10; i++) {
-        UDOUBLE value = ADS1263_GetChannalValue(i, 12, get_DRDYPIN(12));
+        UDOUBLE value = ADS1263_GetChannalValue(i, ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
         double vlt;
         
         // Convert ADC value to voltage
@@ -275,7 +280,7 @@ int READ_SWITCH_STATE(void) {
  * Returns: Actual system voltage in volts (after applying voltage divider factor)
  */
 double READ_SYSTEM_VOLTAGE(void) {
-    UDOUBLE vltReading = ADS1263_GetChannalValue(7, 23, get_DRDYPIN(23));
+    UDOUBLE vltReading = ADS1263_GetChannalValue(7, ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
     double adcVoltage;
     
     if ((vltReading >> 31) == 1){
@@ -624,28 +629,28 @@ int INITIALIZE_ADS(void)
     printf("GPIO Initialized.\n");
     printf("Initializing SPI Interface...\n");
     
-    DEV_Module_Init(18, 12, get_DRDYPIN(12));
-    DEV_Module_Init(18, 22, get_DRDYPIN(22));
-    DEV_Module_Init(18, 23, get_DRDYPIN(23));
+    DEV_Module_Init(18, ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
+    DEV_Module_Init(18, ADHAT2_DRYDPIN, get_DRDYPIN(ADHAT2_DRYDPIN));
+    DEV_Module_Init(18, ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
     ADS1263_reset(18);
     
     printf("SPI Interface initialized. Initializing AD HATs...\n");
     
-    if(ADS1263_init_ADC1(ADS1263_38400SPS, 12) == 1) {
+    if(ADS1263_init_ADC1(ADS1263_38400SPS, ADHAT1_DRYDPIN) == 1) {
         printf("\r\n END \r\n");
-        DEV_Module_Exit(12, get_DRDYPIN(12));
+        DEV_Module_Exit(ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
         exit(0);
     }
     
-    if(ADS1263_init_ADC1(ADS1263_38400SPS, 22) == 1) {
+    if(ADS1263_init_ADC1(ADS1263_38400SPS, ADHAT2_DRYDPIN) == 1) {
         printf("\r\n END \r\n");
-        DEV_Module_Exit(22, get_DRDYPIN(22));
+        DEV_Module_Exit(ADHAT2_DRYDPIN, get_DRDYPIN(ADHAT2_DRYDPIN));
         exit(0);
     }
     
-    if(ADS1263_init_ADC1(ADS1263_38400SPS, 23) == 1) {
+    if(ADS1263_init_ADC1(ADS1263_38400SPS, ADHAT3_DRYDPIN) == 1) {
         printf("\r\n END \r\n");
-        DEV_Module_Exit(23, get_DRDYPIN(23));
+        DEV_Module_Exit(ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
         exit(0);
     }
     
@@ -659,9 +664,9 @@ int INITIALIZE_ADS(void)
 int CLOSE_GPIO(void)
 {
     printf("Shutting down all GPIOs...\n");
-    DEV_Module_Exit(18, 12);
-    DEV_Module_Exit(18, 22);
-    DEV_Module_Exit(18, 23);
+    DEV_Module_Exit(18, ADHAT1_DRYDPIN);
+    DEV_Module_Exit(18, ADHAT2_DRYDPIN);
+    DEV_Module_Exit(18, ADHAT3_DRYDPIN);
     SYSFS_GPIO_Release();
     printf("Shutdown complete.\n");
     return 0;

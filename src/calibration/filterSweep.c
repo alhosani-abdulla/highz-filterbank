@@ -174,9 +174,44 @@ char *CREATE_CYCLE_DIRECTORY(const char *output_dir, const char *cycle_id)
         return NULL;
     }
     
-    char *date_dir = CREATE_DATE_DIRECTORY(output_dir);
-    if (!date_dir) {
+    // Parse date from cycle_id format: Cycle_MMDDYYYY_###
+    // Expected format: "Cycle_02182026_001"
+    if (strlen(cycle_id) < 14 || strncmp(cycle_id, "Cycle_", 6) != 0) {
+        fprintf(stderr, "Error: Invalid cycle_id format '%s' (expected Cycle_MMDDYYYY_###)\n", cycle_id);
         return NULL;
+    }
+    
+    // Extract date string (8 chars starting at position 6)
+    char date_str[9];
+    strncpy(date_str, cycle_id + 6, 8);
+    date_str[8] = '\0';
+    
+    // Validate date string is numeric
+    for (int i = 0; i < 8; i++) {
+        if (date_str[i] < '0' || date_str[i] > '9') {
+            fprintf(stderr, "Error: Invalid date in cycle_id '%s' (expected numeric MMDDYYYY)\n", cycle_id);
+            return NULL;
+        }
+    }
+    
+    // Build date directory path
+    size_t date_dir_len = strlen(output_dir) + 1 + 8 + 1;
+    char *date_dir = malloc(date_dir_len);
+    if (!date_dir) {
+        fprintf(stderr, "Error: Failed to allocate memory for date directory path\n");
+        return NULL;
+    }
+    snprintf(date_dir, date_dir_len, "%s/%s", output_dir, date_str);
+    
+    // Create date directory if it doesn't exist
+    struct stat st = {0};
+    if (stat(date_dir, &st) == -1) {
+        if (mkdir(date_dir, 0755) != 0) {
+            fprintf(stderr, "Error: Failed to create directory %s: %s\n", date_dir, strerror(errno));
+            free(date_dir);
+            return NULL;
+        }
+        printf("Created date directory: %s\n", date_dir);
     }
     
     size_t path_len = strlen(date_dir) + 1 + strlen(cycle_id) + 1;
@@ -190,7 +225,7 @@ char *CREATE_CYCLE_DIRECTORY(const char *output_dir, const char *cycle_id)
     snprintf(full_path, path_len, "%s/%s", date_dir, cycle_id);
     free(date_dir);
     
-    struct stat st = {0};
+    // Reuse st for cycle directory check
     if (stat(full_path, &st) == -1) {
         if (mkdir(full_path, 0755) != 0) {
             fprintf(stderr, "Error: Failed to create cycle directory %s: %s\n", full_path, strerror(errno));
@@ -593,8 +628,9 @@ int main(int argc, char **argv) {
     // Check command-line arguments
     if (argc != 3) {
         printf("Usage: %s <cycle_id> <timezone>\n", argv[0]);
-        printf("Example: %s Cycle_001 -07:00\n", argv[0]);
-        printf("         %s Cycle_001 +00:00\n", argv[0]);
+        printf("Example: %s Cycle_02182026_001 -07:00\n", argv[0]);
+        printf("         %s Cycle_02192026_015 +00:00\n", argv[0]);
+        printf("Note: cycle_id format is Cycle_MMDDYYYY_### (date embedded in ID)\n");
         return 1;
     }
     char *cycle_id = argv[1];

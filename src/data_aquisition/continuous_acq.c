@@ -16,6 +16,8 @@
 #include <time.h>     // Time functions
 #include <math.h>     // Mathematical functions
 #include <unistd.h>   // POSIX API (write, usleep)
+#include <sys/stat.h> // Directory creation
+#include <errno.h>    // Error codes
 
 /* Hardware-Specific Libraries */
 #include <fitsio.h>   // FITS file format handling
@@ -40,10 +42,10 @@ const int GPIO_FREQ_RESET = 5;      // Reset frequency sweep (falling edge trigg
 const int GPIO_LO_POWER = 6;        // LO board power control (HIGH=ON, LOW=OFF)
 
 /* Frequency Sweep Parameters - Data Acquisition: 650-936 MHz, 2 MHz steps */
-const double FREQ_MIN = 650.0;      // Starting frequency (MHz)
-const double FREQ_MAX = 936.0;      // Ending frequency (MHz)
-const double FREQ_STEP = 2.0;       // Frequency increment per step (MHz)
-#define TOTAL_STEPS ((int)(((FREQ_MAX - FREQ_MIN) / FREQ_STEP) + 1))  // Dynamically calculated: (850-650)/2+1 = 101 measurements per sweep
+#define FREQ_MIN 650.0              // Starting frequency (MHz)
+#define FREQ_MAX 936.0              // Ending frequency (MHz)
+#define FREQ_STEP 2.0               // Frequency increment per step (MHz)
+#define TOTAL_STEPS 144             // Calculated: (FREQ_MAX - FREQ_MIN) / FREQ_STEP + 1 = (936-650)/2 + 1
 
 /* Output Directory Configuration */
 const char *OUTPUT_DIR = "/media/peterson/INDURANCE/Data";  // Directory for saving FITS files
@@ -66,27 +68,28 @@ int INTER_SWEEP_WAIT_S = 0.1;   // seconds between sweeps for LO stabilization
 double LO_FREQ = FREQ_MIN;     // Local Oscillator starting frequency (initialized to FREQ_MIN)
 
 /* 
- * Structure to hold data from all three AD HATs plus metadata
- * Each instance represents one sample point in time
+ * Structure to hold data from all three AD HATs
+ * Each instance represents one measurement at a single frequency
  */
 typedef struct {
-    UDOUBLE ADHAT_1[ChannelNumber];  // Data from first AD HAT
-    UDOUBLE ADHAT_2[ChannelNumber];  // Data from second AD HAT
-    UDOUBLE ADHAT_3[ChannelNumber];  // Data from third AD HAT
-    char TIME_RPI2[32];              // Timestamp from local Raspberry Pi
-    char STATE[32];                  // Current state of the system
-    char FREQUENCY[32];              // Current LO frequency
-    char FILENAME[32];               // Output filename for this data
+    UDOUBLE ADHAT_1[ChannelNumber];  // Data from first AD HAT (7 channels)
+    UDOUBLE ADHAT_2[ChannelNumber];  // Data from second AD HAT (7 channels)
+    UDOUBLE ADHAT_3[ChannelNumber];  // Data from third AD HAT (7 channels)
 } GetAllValues;
 
 /* 
  * Structure for managing FITS file data
- * Contains an array of samples and the number of rows
+ * Contains an array of measurements for one complete frequency sweep
  */
 typedef struct {
-    GetAllValues *data;  // Dynamically allocated array of samples
-    int nrows;          // Number of rows in the data array
-    double sys_voltage; // System voltage (read once per sweep)
+    GetAllValues *data;      // Array of 144 measurements (one per frequency)
+    int nrows;              // Number of measurements (should be 144)
+    double sys_voltage;     // System voltage (read once per sweep)
+    char timestamp[32];     // Timestamp for this sweep
+    double frequencies[TOTAL_STEPS]; // Array of LO frequencies for this sweep
+    int spectrum_index;     // Index of this spectrum (for multi-sweep files)
+    char cycle_id[32];      // Cycle identifier (e.g., "cycle_001")
+    int state;              // State for this sweep (0-7)
 } FITS_DATA;
 
 /* ============= Double Buffer System and Thread Synchronization ============= */
@@ -106,8 +109,6 @@ pthread_cond_t buffer_ready_cond = PTHREAD_COND_INITIALIZER;  // Signals buffer 
 /* Buffer State Tracking */
 int buffer_to_write = 0;   // 0 = none, 1 = bufferA, 2 = bufferB
 volatile sig_atomic_t exit_flag = 0;  // Program termination flag (volatile for signal safety)
-int state2_sweeps_collected = 0;  // Counter for sweeps collected on state 2
-const int STATE2_MAX_SWEEPS = 6;   // Number of sweeps to collect on state 2 before transitioning to calib
 
 /* Global thread handle for cleanup in signal handler */
 pthread_t global_writer_thread;
@@ -117,8 +118,10 @@ pthread_t global_writer_thread;
  * Contains information needed for FITS file creation
  */
 typedef struct {
-    const char *filename;  // Output filename
-    int nrows;            // Number of rows to write
+    const char *filename;  // Output filename (not used with new format)
+    int nrows;            // Number of rows per sweep (should be 144)
+    int state;            // Switch state value
+    char cycle_id[32];    // Cycle identifier
 } writer_args_t;
 
 /* ============= Forward Declarations ============= */
@@ -145,13 +148,13 @@ void Handler(int signo) {
     // Wake up writer thread if it's waiting
     pthread_cond_signal(&buffer_ready_cond);
 
-    // Reset GPIO pins to idle state
+    // Return LO control pins to idle HIGH state (ready for next trigger)
     gpioWrite(GPIO_FREQ_INCREMENT, 1);
     gpioWrite(GPIO_FREQ_RESET, 1);
     gpioDelay(LO_SETTLE_US);
-    printf("✓ GPIO pins reset to idle state\n");
+    printf("✓ LO control pins returned to idle HIGH\n");
 
-    // Power down LO board
+    // Power down LO board (filterSweep needs it off)
     gpioWrite(GPIO_LO_POWER, 0);
     gpioDelay(LO_SETTLE_US);
     printf("✓ LO board powered down\n");
@@ -182,13 +185,135 @@ char *GET_TIME(void)
         return NULL;
     }
     
-    if (strftime(buf, 64, "%m%d%Y_%H%M%S.fits", t) == 0) {
+    if (strftime(buf, 64, "%m%d%Y_%H%M%S", t) == 0) {
         fprintf(stderr, "Error: Failed to format time string\n");
         free(buf);  // Clean up allocated memory
         return NULL;
     }
 
     return buf;
+}
+
+/*
+ * Gets date string in format "MMDDYYYY" for directory creation
+ * Returns:
+ *   char*: Dynamically allocated string with current date
+ *   NULL: If memory allocation fails
+ * Note: Caller must free the returned string
+ */
+char *GET_DATE(void)
+{
+    char *buf = malloc(16);
+    if (!buf) {
+        fprintf(stderr, "Error: Failed to allocate memory for date buffer\n");
+        perror("GET_DATE malloc failed");
+        return NULL;
+    }
+    
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    if (!t) {
+        fprintf(stderr, "Error: Failed to get local time\n");
+        free(buf);
+        return NULL;
+    }
+    
+    if (strftime(buf, 16, "%m%d%Y", t) == 0) {
+        fprintf(stderr, "Error: Failed to format date string\n");
+        free(buf);
+        return NULL;
+    }
+
+    return buf;
+}
+
+/*
+ * Creates date-based directory if it doesn't exist
+ * Parameters:
+ *   output_dir: Base output directory path
+ * Returns:
+ *   char*: Full path to date directory (caller must free)
+ *   NULL: On error
+ */
+char *CREATE_DATE_DIRECTORY(const char *output_dir)
+{
+    char *date_str = GET_DATE();
+    if (!date_str) {
+        return NULL;
+    }
+    
+    // Allocate buffer for full path: output_dir + "/" + date + null terminator
+    size_t path_len = strlen(output_dir) + 1 + strlen(date_str) + 1;
+    char *full_path = malloc(path_len);
+    if (!full_path) {
+        fprintf(stderr, "Error: Failed to allocate memory for directory path\n");
+        free(date_str);
+        return NULL;
+    }
+    
+    snprintf(full_path, path_len, "%s/%s", output_dir, date_str);
+    free(date_str);
+    
+    // Create directory if it doesn't exist (mkdir -p behavior)
+    struct stat st = {0};
+    if (stat(full_path, &st) == -1) {
+        if (mkdir(full_path, 0755) != 0) {
+            fprintf(stderr, "Error: Failed to create directory %s: %s\n", full_path, strerror(errno));
+            free(full_path);
+            return NULL;
+        }
+        printf("Created date directory: %s\n", full_path);
+    }
+    
+    return full_path;
+}
+
+/*
+ * Creates cycle-based directory under date directory if it doesn't exist
+ * Parameters:
+ *   output_dir: Base output directory path
+ *   cycle_id: Cycle identifier (e.g., "cycle_001")
+ * Returns:
+ *   char*: Full path to cycle directory (caller must free)
+ *   NULL: On error
+ */
+char *CREATE_CYCLE_DIRECTORY(const char *output_dir, const char *cycle_id)
+{
+    if (!output_dir || !cycle_id) {
+        fprintf(stderr, "Error: Invalid parameters for CREATE_CYCLE_DIRECTORY\n");
+        return NULL;
+    }
+    
+    // First create date directory
+    char *date_dir = CREATE_DATE_DIRECTORY(output_dir);
+    if (!date_dir) {
+        return NULL;
+    }
+    
+    // Allocate buffer for full path: date_dir + "/" + cycle_id + null terminator
+    size_t path_len = strlen(date_dir) + 1 + strlen(cycle_id) + 1;
+    char *full_path = malloc(path_len);
+    if (!full_path) {
+        fprintf(stderr, "Error: Failed to allocate memory for cycle directory path\n");
+        free(date_dir);
+        return NULL;
+    }
+    
+    snprintf(full_path, path_len, "%s/%s", date_dir, cycle_id);
+    free(date_dir);
+    
+    // Create cycle directory if it doesn't exist
+    struct stat st = {0};
+    if (stat(full_path, &st) == -1) {
+        if (mkdir(full_path, 0755) != 0) {
+            fprintf(stderr, "Error: Failed to create cycle directory %s: %s\n", full_path, strerror(errno));
+            free(full_path);
+            return NULL;
+        }
+        printf("Created cycle directory: %s\n", full_path);
+    }
+    
+    return full_path;
 }
 
 // Allocate FITS_DATA with dynamic array
@@ -237,43 +362,7 @@ int COLLECT_ADC_DATA(GetAllValues *data_row) {
     return 0;
 }
 
-/*
- * Reads RF switch state from ADC pins 7-9 on HAT 12
- * Returns: State value (0-7) representing 3-bit switch position
- */
-int READ_SWITCH_STATE(void) {
-    int state = 0;
-    
-    for(int i = 7; i < 10; i++) {
-        UDOUBLE value = ADS1263_GetChannalValue(i, ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
-        double vlt;
-        
-        // Convert ADC value to voltage
-        if ((value >> 31) == 1){
-            vlt = 5 * 2 - value/2147483648.0 * 5;
-        }
-        else {
-            vlt = value/2147483647.8 * 5;
-        }
-        
-        // Determine bit state (HIGH or LOW)
-        int on_or_off = (vlt < 3) ? 0 : 1;
-        
-        // Calculate state bit contribution
-        double exponentiation = exp2(i-7);
-        state = state + on_or_off * exponentiation;
 
-        // Print diagnostic information (only if verbose measurement output enabled)
-        if (ENABLE_VERBOSE_MEASUREMENT) {
-            printf("Pin %d: ADC value = %llu, Voltage = %.6f V\n", i, value, vlt);
-        }
-    }
-    
-    if (ENABLE_VERBOSE_MEASUREMENT) {
-        printf("STATE: %d\n", state);
-    }
-    return state;
-}
 
 /*
  * Reads system voltage from ADC channel 7 on HAT 23
@@ -307,24 +396,18 @@ double READ_SYSTEM_VOLTAGE(void) {
  *   state: Switch state value
  * Returns: 0 on success
  */
-int STORE_METADATA(GetAllValues *data_row, const char *timestamp, int state) {
-    if (!data_row || !timestamp) return -1;
+/*
+ * Stores the current LO frequency in the sweep's frequency array
+ * Parameters:
+ *   input_struct: FITS_DATA structure containing frequency array
+ *   index: Index in the frequency array (0-143)
+ * Returns: 0 on success, -1 on error
+ */
+int STORE_FREQUENCY(FITS_DATA *input_struct, int index) {
+    if (!input_struct) return -1;
+    if (index < 0 || index >= TOTAL_STEPS) return -1;
     
-    // Store timestamp
-    strncpy(data_row->TIME_RPI2, timestamp, 31);
-    data_row->TIME_RPI2[31] = '\0';
-    
-    // Store state
-    snprintf(data_row->STATE, 32, "%d", state);
-    data_row->STATE[31] = '\0';
-    
-    // Store frequency
-    snprintf(data_row->FREQUENCY, 32, "%f", LO_FREQ);
-    
-    // Store filename
-    strncpy(data_row->FILENAME, timestamp, 31);
-    data_row->FILENAME[31] = '\0';
-    
+    input_struct->frequencies[index] = LO_FREQ;
     return 0;
 }
 
@@ -339,11 +422,12 @@ int INCREMENT_LO_FREQUENCY(void) {
     
     start_time = clock();
     
-    if (LO_FREQ < FREQ_MAX - FREQ_STEP){
+    // Check if we can increment (allow incrementing up to and including FREQ_MAX)
+    if (LO_FREQ < FREQ_MAX){
         // Increment to next frequency
         gpioWrite(GPIO_FREQ_INCREMENT, 0); // Falling edge triggers Arduino
         gpioDelay(PULSE_LOW_US);           // Short delay to ensure proper timing
-        gpioWrite(GPIO_FREQ_INCREMENT, 1); // Return GPIO pins to idle HIGH state
+        gpioWrite(GPIO_FREQ_INCREMENT, 1); // Return to idle HIGH state (ready for next trigger)
         gpioDelay(LO_SETTLE_US);           // Short delay to ensure proper timing
         LO_FREQ = LO_FREQ + FREQ_STEP;
     }
@@ -351,7 +435,7 @@ int INCREMENT_LO_FREQUENCY(void) {
         // Reset to minimum frequency after reaching maximum
         gpioWrite(GPIO_FREQ_RESET, 0);     // Falling edge triggers Arduino reset
         gpioDelay(PULSE_LOW_US);           // Short delay to ensure proper timing
-        gpioWrite(GPIO_FREQ_RESET, 1);     // Return GPIO pins to idle HIGH state
+        gpioWrite(GPIO_FREQ_RESET, 1);     // Return to idle HIGH state (ready for next trigger)
         sleep(INTER_SWEEP_WAIT_S);
         LO_FREQ = FREQ_MIN;
     }
@@ -370,11 +454,10 @@ int INCREMENT_LO_FREQUENCY(void) {
  * Main data collection function - orchestrates the measurement cycle
  * Parameters:
  *   input_struct: FITS_DATA structure containing data buffer
- *   i: Row index in the buffer where data will be stored
+ *   i: Row index in the buffer where data will be stored (0-143)
  * Returns: 
  *   0 on success
  *   -1 on error
- *   0 with exit_flag=1 if state 2 detected
  */
 int GET_DATA(FITS_DATA *input_struct, int i) {
     // Validate inputs
@@ -382,243 +465,268 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     if (i < 0 || i >= input_struct->nrows) return -1;
     if (!input_struct->data) return -1;
     
-    // Step 1: Check RF switch state FIRST (before collecting ADC data)
-    int state = READ_SWITCH_STATE();
-    
-    // Step 2: Handle state 2 detection (do not exit yet, just log)
-    if (state == 2){
-        printf("\n========================================\n");
-        printf("STATE 2 DETECTED - Currently in sweep collection\n");
-        printf("========================================\n");
-        // Continue to collect data on this sweep (don't return early)
-    }
-    
-    // Get timestamp for this measurement
-    char *timestamp = GET_TIME();
-    if (!timestamp) {
-        fprintf(stderr, "Error: Failed to get timestamp\n");
-        return -1;
-    }
-    
     if (ENABLE_VERBOSE_MEASUREMENT) {
         printf("##########################################\n");
         printf("MEASURING AT LO FREQ: %lf MHz\n", LO_FREQ);
         printf("##########################################\n");
     }
 
-    // Step 3: Collect ADC data from all three AD HATs at current frequency
+    // Collect ADC data from all three AD HATs at current frequency
     if (COLLECT_ADC_DATA(&input_struct->data[i]) != 0) {
         fprintf(stderr, "Error: Failed to collect ADC data\n");
-        free(timestamp);
         return -1;
     }
     
-    // Step 4: Store all metadata in buffer
-    if (STORE_METADATA(&input_struct->data[i], timestamp, state) != 0) {
-        fprintf(stderr, "Error: Failed to store metadata\n");
-        free(timestamp);
+    // Store the current frequency in the sweep's frequency array
+    if (STORE_FREQUENCY(input_struct, i) != 0) {
+        fprintf(stderr, "Error: Failed to store frequency\n");
         return -1;
     }
     
-    free(timestamp);
-    
-    // Step 5: Increment frequency for next measurement
+    // Increment frequency for next measurement
     INCREMENT_LO_FREQUENCY();
     
     return 0;
 }
 
 /*
- * Saves collected data to FITS file format
+ * Saves collected data to FITS file format (Image Cube format)
  * Parameters:
- *   input_struct: FITS_DATA structure containing the data buffer
- *   nrows: Number of rows to save
+ *   input_struct: FITS_DATA structure containing one complete sweep
+ *   state: Current state value (for primary header)
  * Returns: 0 on success, -1 or FITS error code on failure
  */
-int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows) {
+/*
+ * Saves collected sweep data to FITS file in cube format
+ * Creates or appends to state-specific FITS file in cycle directory
+ * File structure: /Data/MMDDYYYY/Cycle_XXX/state_Y.fits
+ * 
+ * Parameters:
+ *   input_struct: FITS_DATA structure containing sweep data
+ *   state: State value (0-7), used for informational purposes (state already in struct)
+ * Returns:
+ *   0 on success
+ *   negative value on error
+ */
+int SAVE_OUTPUT(FITS_DATA* input_struct, int state) {
     if (!input_struct) return -1;
 
     fitsfile *fptr;
     int status = 0;
-    int num = ChannelNumber;
+    const int num_channels = ChannelNumber * 3;  // 21 total channels (7 per hat × 3 hats)
+    const int cube_size = TOTAL_STEPS * num_channels;  // 144 × 21 = 3024 values
     
-    // FITS column definitions (removed SYSTEM VOLTAGE column)
-    char *ttype[] = { "ADHAT_1", "ADHAT_2", "ADHAT_3", "TIME_RPI2", "SWITCH STATE", "FREQUENCY", "FILENAME"};
-    char *tform[] = { "7K", "7K", "7K", "25A", "15A", "15A", "25A"};
-    char *tunit[] = { "", "", "", "", "", "", ""};
-    
-    // Get filename from first data row
-    char full_filename[256];
-    char filename[32];
-    strncpy(filename, input_struct->data[0].FILENAME, 31);
-    filename[31] = '\0';
-    
-    // Create FITS file (! prefix forces overwrite if exists)
-    snprintf(full_filename, sizeof(full_filename), "!%s/%s", OUTPUT_DIR, filename);
-    if (fits_create_file(&fptr, full_filename, &status)) {
-        fits_report_error(stderr, status);
-        return status;
+    // Create cycle directory
+    char *cycle_dir = CREATE_CYCLE_DIRECTORY(OUTPUT_DIR, input_struct->cycle_id);
+    if (!cycle_dir) {
+        fprintf(stderr, "Error: Failed to create cycle directory\n");
+        return -1;
     }
     
-    // Create binary table extension
-    const char *extname = "FILTER BANK DATA";
-    if (fits_create_tbl(fptr, BINARY_TBL, 0, 7, ttype, tform, tunit, extname, &status)) {
-        fits_report_error(stderr, status);
-        fits_close_file(fptr, &status);
-        return status;
+    // Construct filename: {cycle_dir}/state_{state}.fits
+    char filepath[512];
+    snprintf(filepath, sizeof(filepath), "%s/state_%d.fits", cycle_dir, input_struct->state);
+    
+    // Check if file exists using stat (don't use ! prefix yet)
+    struct stat st = {0};
+    int file_exists = (stat(filepath, &st)== 0);
+    
+    int n_spectra_current = 0;
+    long current_rows = 0;
+    
+    if (!file_exists) {
+        // File doesn't exist - create new file
+        char fits_filename[520];
+        snprintf(fits_filename, sizeof(fits_filename), "!%s", filepath);  // ! forces overwrite
+        
+        if (fits_create_file(&fptr, fits_filename, &status)) {
+            fprintf(stderr, "Error creating FITS file: %s\n", filepath);
+            fits_report_error(stderr, status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        // Create null primary array (BITPIX=8, NAXIS=0)
+        long naxes = 0;
+        if (fits_create_img(fptr, BYTE_IMG, 0, &naxes, &status)) {
+            fprintf(stderr, "Error creating primary HDU\n");
+            fits_report_error(stderr, status);
+            fits_close_file(fptr, &status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        // Write primary header keywords
+        int n_spectra = 1;  // First sweep
+        int n_lo_pts = TOTAL_STEPS;
+        char data_fmt[] = "image_cube";
+        char timezone[] = "EST (GMT-5)";
+        char antenna[] = "Unknown";
+        char ant_size[] = "Unknown";
+        char ant_note[] = "See observation log";
+        
+        if (fits_update_key(fptr, TSTRING, "CYCLE_ID", input_struct->cycle_id, "Observation cycle identifier", &status) ||
+            fits_update_key(fptr, TINT, "STATE", &input_struct->state, "Switch state", &status) ||
+            fits_update_key(fptr, TINT, "N_FILTERS", (int*)&num_channels, "Number of filter channels", &status) ||
+            fits_update_key(fptr, TINT, "N_LO_PTS", &n_lo_pts, "Number of LO frequency points", &status) ||
+            fits_update_key(fptr, TINT, "N_SPECTRA", &n_spectra, "Number of spectra in this file", &status) ||
+            fits_update_key(fptr, TSTRING, "DATA_FMT", data_fmt, "Data format type", &status) ||
+            fits_update_key(fptr, TDOUBLE, "SYSVOLT", &input_struct->sys_voltage, "System voltage (V)", &status) ||
+            fits_update_key(fptr, TSTRING, "TIMEZONE", timezone, "Local timezone", &status) ||
+            fits_update_key(fptr, TSTRING, "ANTENNA", antenna, "Antenna identifier", &status) ||
+            fits_update_key(fptr, TSTRING, "ANT_SIZE", ant_size, "Antenna size", &status) ||
+            fits_update_key(fptr, TSTRING, "ANT_NOTE", ant_note, "Antenna notes", &status)) {
+            fits_report_error(stderr, status);
+            fits_close_file(fptr, &status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        // Create binary table extension
+        char *ttype[] = {"DATA_CUBE", "SPECTRUM_TIMESTAMP", "SPECTRUM_INDEX", "SYSVOLT", "LO_FREQUENCIES"};
+        char *tform[] = {"3024J", "25A", "1J", "1E", "144E"};
+        char *tunit[] = {"", "", "", "volts", "MHz"};
+        const char *extname = "IMAGE CUBE DATA";
+        
+        if (fits_create_tbl(fptr, BINARY_TBL, 0, 5, ttype, tform, tunit, extname, &status)) {
+            fits_report_error(stderr, status);
+            fits_close_file(fptr, &status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        printf("Created new FITS file: %s\n", filepath);
+        current_rows = 0;  // No rows yet
+        
+    } else {
+        // File exists - open for appending
+        if (fits_open_file(&fptr, filepath, READWRITE, &status)) {
+            fprintf(stderr, "Error opening existing FITS file: %s\n", filepath);
+            fits_report_error(stderr, status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        // Read current N_SPECTRA
+        if (fits_read_key(fptr, TINT, "N_SPECTRA", &n_spectra_current, NULL, &status)) {
+            fprintf(stderr, "Error reading N_SPECTRA from header\n");
+            fits_report_error(stderr, status);
+            fits_close_file(fptr, &status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        // Move to binary table extension
+        if (fits_movnam_hdu(fptr, BINARY_TBL, (char*)"IMAGE CUBE DATA", 0, &status)) {
+            fprintf(stderr, "Error moving to binary table HDU\n");
+            fits_report_error(stderr, status);
+            fits_close_file(fptr, &status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        // Get current number of rows
+        if (fits_get_num_rows(fptr, &current_rows, &status)) {
+            fprintf(stderr, "Error getting number of rows\n");
+            fits_report_error(stderr, status);
+            fits_close_file(fptr, &status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        // Insert one new row at the end
+        if (fits_insert_rows(fptr, current_rows, 1, &status)) {
+            fprintf(stderr, "Error inserting new row\n");
+            fits_report_error(stderr, status);
+            fits_close_file(fptr, &status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        // Update N_SPECTRA in primary header
+        int new_n_spectra = n_spectra_current + 1;
+        if (fits_movabs_hdu(fptr, 1, NULL, &status) ||
+            fits_update_key(fptr, TINT, "N_SPECTRA", &new_n_spectra, "Number of spectra in this file", &status) ||
+            fits_movnam_hdu(fptr, BINARY_TBL, (char*)"IMAGE CUBE DATA", 0, &status)) {
+            fprintf(stderr, "Error updating N_SPECTRA header\n");
+            fits_report_error(stderr, status);
+            fits_close_file(fptr, &status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        printf("Appending to existing FITS file: %s (sweep #%d)\n", filepath, new_n_spectra);
     }
     
-    // Write system voltage to FITS header (read once per sweep)
-    if (fits_update_key(fptr, TDOUBLE, "SYSVOLT", &input_struct->sys_voltage, 
-                        "System voltage (V) at sweep start", &status)) {
-        fits_report_error(stderr, status);
-        fits_close_file(fptr, &status);
-        return status;
-    }
+    free(cycle_dir);
     
-    printf("FITS file successfully created!\n");
-    
-    // Allocate memory for column data
-    UDOUBLE *col1_data = malloc(sizeof(UDOUBLE) * nrows * num);
-    UDOUBLE *col2_data = malloc(sizeof(UDOUBLE) * nrows * num);
-    UDOUBLE *col3_data = malloc(sizeof(UDOUBLE) * nrows * num);
-    char *col4_data = malloc(nrows * 25 * sizeof(char));  // TIME_RPI2 - needs 21+ chars for timestamp
-    char *col5_data = malloc(nrows * 15 * sizeof(char));  // STATE - 1 digit
-    char *col6_data = malloc(nrows * 15 * sizeof(char));  // FREQUENCY - ~10 chars
-    char *col7_data = malloc(nrows * 25 * sizeof(char));  // FILENAME - needs 21+ chars for timestamp.fits
-    
-    // Check all allocations
-    if (!col1_data || !col2_data || !col3_data || !col4_data || 
-        !col5_data || !col6_data || !col7_data) {
-        fprintf(stderr, "Memory allocation failed for column buffers\n");
-        // Free any successful allocations
-        free(col1_data);
-        free(col2_data);
-        free(col3_data);
-        free(col4_data);
-        free(col5_data);
-        free(col6_data);
-        free(col7_data);
+    // Allocate and populate DATA_CUBE (interleaved: all 21 channels for freq 1, then all 21 for freq 2, etc.)
+    UDOUBLE *data_cube = malloc(sizeof(UDOUBLE) * cube_size);
+    if (!data_cube) {
+        fprintf(stderr, "Memory allocation failed for data cube\n");
         fits_close_file(fptr, &status);
         return -1;
     }
-
-    // Copy ADC data from structure to column arrays
-    for (int i = 0; i < nrows; i++) {
-        for (int j = 0; j < num; j++) {
-            col1_data[i * num + j] = input_struct->data[i].ADHAT_1[j];
-            col2_data[i * num + j] = input_struct->data[i].ADHAT_2[j];
-            col3_data[i * num + j] = input_struct->data[i].ADHAT_3[j];
+    
+    // Fill data cube: for each frequency, pack all 21 channels
+    for (int freq_idx = 0; freq_idx < TOTAL_STEPS; freq_idx++) {
+        int cube_offset = freq_idx * num_channels;
+        // Pack ADHAT_1 (channels 0-6)
+        for (int ch = 0; ch < ChannelNumber; ch++) {
+            data_cube[cube_offset + ch] = input_struct->data[freq_idx].ADHAT_1[ch];
+        }
+        // Pack ADHAT_2 (channels 7-13)
+        for (int ch = 0; ch < ChannelNumber; ch++) {
+            data_cube[cube_offset + ChannelNumber + ch] = input_struct->data[freq_idx].ADHAT_2[ch];
+        }
+        // Pack ADHAT_3 (channels 14-20)
+        for (int ch = 0; ch < ChannelNumber; ch++) {
+            data_cube[cube_offset + 2*ChannelNumber + ch] = input_struct->data[freq_idx].ADHAT_3[ch];
         }
     }
     
-    // Copy string data (timestamp, state, frequency, filename)
-    for (int i = 0; i < nrows; i++) {
-        // Fill with spaces and copy each string field
-        memset(&col4_data[i * 25], ' ', 25);
-        strncpy(&col4_data[i * 25], input_struct->data[i].TIME_RPI2, 24);
-        col4_data[i * 25 + 24] = '\0';
-        
-        memset(&col5_data[i * 15], ' ', 15);
-        strncpy(&col5_data[i * 15], input_struct->data[i].STATE, 14);
-        col5_data[i * 15 + 14] = '\0';
-        
-        memset(&col6_data[i * 15], ' ', 15);
-        strncpy(&col6_data[i * 15], input_struct->data[i].FREQUENCY, 14);
-        col6_data[i * 15 + 14] = '\0';
-        
-        memset(&col7_data[i * 25], ' ', 25);
-        strncpy(&col7_data[i * 25], input_struct->data[i].FILENAME, 24);
-        col7_data[i * 25 + 24] = '\0';
+    // Convert frequencies from double to float for FITS
+    float *lo_frequencies = malloc(sizeof(float) * TOTAL_STEPS);
+    if (!lo_frequencies) {
+        fprintf(stderr, "Memory allocation failed for LO frequencies\n");
+        free(data_cube);
+        fits_close_file(fptr, &status);
+        return -1;
+    }
+    for (int i = 0; i < TOTAL_STEPS; i++) {
+        lo_frequencies[i] = (float)input_struct->frequencies[i];
     }
     
-    // Create pointer arrays for string columns
-    char **col4_ptrs = malloc(nrows * sizeof(char *));
-    char **col5_ptrs = malloc(nrows * sizeof(char *));
-    char **col6_ptrs = malloc(nrows * sizeof(char *));
-    char **col7_ptrs = malloc(nrows * sizeof(char *));
+    // Write to the new row (current_rows + 1)
+    long row = current_rows + 1;
+    int spectrum_index = input_struct->spectrum_index;
+    float sysvolt = (float)input_struct->sys_voltage;
+    char *timestamp_ptr = input_struct->timestamp;
     
-    // Check pointer array allocations
-    if (!col4_ptrs || !col5_ptrs || !col6_ptrs || !col7_ptrs) {
-        fprintf(stderr, "Memory allocation failed for pointer arrays\n");
-        goto cleanup;
-    }
-    
-    // Set up pointer arrays
-    for (int i = 0; i < nrows; i++) {
-        col4_ptrs[i] = &col4_data[i * 25];
-        col5_ptrs[i] = &col5_data[i * 15];
-        col6_ptrs[i] = &col6_data[i * 15];
-        col7_ptrs[i] = &col7_data[i * 25];
-    }
-
-    // Write all columns to FITS file (removed col8 for voltage)
-    if (fits_write_col(fptr, TUINT, 1, 1, 1, nrows * num, col1_data, &status) ||
-        fits_write_col(fptr, TUINT, 2, 1, 1, nrows * num, col2_data, &status) ||
-        fits_write_col(fptr, TUINT, 3, 1, 1, nrows * num, col3_data, &status) ||
-        fits_write_col(fptr, TSTRING, 4, 1, 1, nrows, col4_ptrs, &status) ||
-        fits_write_col(fptr, TSTRING, 5, 1, 1, nrows, col5_ptrs, &status) ||
-        fits_write_col(fptr, TSTRING, 6, 1, 1, nrows, col6_ptrs, &status) ||
-        fits_write_col(fptr, TSTRING, 7, 1, 1, nrows, col7_ptrs, &status)) {
+    if (fits_write_col(fptr, TUINT, 1, row, 1, cube_size, data_cube, &status) ||
+        fits_write_col(fptr, TSTRING, 2, row, 1, 1, &timestamp_ptr, &status) ||
+        fits_write_col(fptr, TINT, 3, row, 1, 1, &spectrum_index, &status) ||
+        fits_write_col(fptr, TFLOAT, 4, row, 1, 1, &sysvolt, &status) ||
+        fits_write_col(fptr, TFLOAT, 5, row, 1, TOTAL_STEPS, lo_frequencies, &status)) {
+        fprintf(stderr, "Error writing data to row %ld\n", row);
         fits_report_error(stderr, status);
-        goto cleanup;
-    }
-
-    // Flush and close FITS file
-    if (fits_flush_file(fptr, &status)) {
-        fits_report_error(stderr, status);
-        goto cleanup;
-    }
-
-    if (fits_close_file(fptr, &status)) {
-        fits_report_error(stderr, status);
-        // Don't goto cleanup since file is already closed
-        free(col1_data);
-        free(col2_data);
-        free(col3_data);
-        free(col4_data);
-        free(col5_data);
-        free(col6_data);
-        free(col7_data);
-        free(col4_ptrs);
-        free(col5_ptrs);
-        free(col6_ptrs);
-        free(col7_ptrs);
+        free(data_cube);
+        free(lo_frequencies);
+        fits_close_file(fptr, &status);
         return status;
     }
-
-    printf("Buffer saved successfully.\n");
-
-    // Clean up all allocated memory
-    free(col1_data);
-    free(col2_data);
-    free(col3_data);
-    free(col4_data);
-    free(col5_data);
-    free(col6_data);
-    free(col7_data);
-    free(col4_ptrs);
-    free(col5_ptrs);
-    free(col6_ptrs);
-    free(col7_ptrs);
-
+    
+    // Clean up and close
+    free(data_cube);
+    free(lo_frequencies);
+    
+    if (fits_close_file(fptr, &status)) {
+        fits_report_error(stderr, status);
+        return status;
+    }
+    
+    printf("Sweep data saved successfully.\n");
     return 0;
-
-cleanup:
-    // Error path - clean up and close file
-    free(col1_data);
-    free(col2_data);
-    free(col3_data);
-    free(col4_data);
-    free(col5_data);
-    free(col6_data);
-    free(col7_data);
-    free(col4_ptrs);
-    free(col5_ptrs);
-    free(col6_ptrs);
-    free(col7_ptrs);
-    fits_close_file(fptr, &status);
-    return status;
 }
 
 int INITIALIZE_ADS(void)
@@ -672,27 +780,27 @@ int CLOSE_GPIO(void)
     return 0;
 }
 
-// Clean shutdown of GPIO and LO board
+// Clean shutdown - power down LO board and disconnect from pigpio
 void CLEANUP_AND_SHUTDOWN(void)
 {
     printf("\n========================================\n");
     printf("Starting cleanup procedure...\n");
     printf("========================================\n");
     
-    // Reset GPIO pins to idle state
+    // Return LO control pins to idle HIGH state (ready for next use)
     gpioWrite(GPIO_FREQ_INCREMENT, 1);
     gpioWrite(GPIO_FREQ_RESET, 1);
     gpioDelay(LO_SETTLE_US);
-    printf("✓ GPIO pins reset to idle state\n");
+    printf("✓ LO control pins returned to idle HIGH\n");
 
-    // Power down LO board
+    // Power down LO board (filterSweep requires LO board to be off)
     gpioWrite(GPIO_LO_POWER, 0);
     gpioDelay(LO_SETTLE_US);
     printf("✓ LO board powered down\n");
     
-    // Terminate pigpio
+    // Release GPIO hardware access (allows next process to initialize)
     gpioTerminate();
-    printf("✓ pigpio terminated\n");
+    printf("✓ GPIO hardware released\n");
     
     // Close AD HAT GPIOs
     CLOSE_GPIO();
@@ -703,10 +811,10 @@ void CLEANUP_AND_SHUTDOWN(void)
     printf("========================================\n");
 }
 
-// Writer thread function now accepts struct with filename and nrows
+// Writer thread function now accepts struct with state and nrows
 void* writer_thread_func(void *arg) {
     writer_args_t *args = (writer_args_t*)arg;
-    int nrows = args->nrows;
+    int state = args->state;
 
     while (1) {
         if (ENABLE_VERBOSE_SWEEP) {
@@ -743,7 +851,7 @@ void* writer_thread_func(void *arg) {
         
             start_time = clock();
                     
-            int status = SAVE_OUTPUT(buf, nrows); //removed filename argument
+            int status = SAVE_OUTPUT(buf, state);
             
             end_time = clock();
 
@@ -765,14 +873,59 @@ void* writer_thread_func(void *arg) {
 }
 
 int main(int argc, char **argv) {
+    // Parse command-line arguments
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <cycle_id> <state> <num_spectra>\n", argv[0]);
+        fprintf(stderr, "  <cycle_id>    : Cycle identifier (e.g., 'cycle_001')\n");
+        fprintf(stderr, "  <state>       : State value (0-7)\n");
+        fprintf(stderr, "                  0=Antenna, 1=Open, 2=Short, 3=Long Cable Open,\n");
+        fprintf(stderr, "                  4=Black Body, 5=Ambient, 6=Noise Diode, 7=Long Cable Short\n");
+        fprintf(stderr, "  <num_spectra> : Number of sweeps/spectra to collect (positive integer)\n");
+        return 1;
+    }
+    
+    // Parse cycle_id argument
+    char cycle_id[32];
+    strncpy(cycle_id, argv[1], 31);
+    cycle_id[31] = '\0';
+    
+    // Parse state argument
+    char *endptr;
+    long state_long = strtol(argv[2], &endptr, 10);
+    if (*endptr != '\0' || state_long < 0 || state_long > 7) {
+        fprintf(stderr, "Error: Invalid state '%s'. Must be integer 0-7.\n", argv[2]);
+        return 1;
+    }
+    int target_state = (int)state_long;
+    
+    // Parse num_spectra argument
+    long num_spectra_long = strtol(argv[3], &endptr, 10);
+    if (*endptr != '\0' || num_spectra_long <= 0) {
+        fprintf(stderr, "Error: Invalid num_spectra '%s'. Must be positive integer.\n", argv[3]);
+        return 1;
+    }
+    int num_spectra = (int)num_spectra_long;
+    
+    // State name lookup for display
+    const char *state_names[] = {
+        "Antenna", "Open Circuit", "Short Circuit", "Long Cable Open Circuit",
+        "Black Body", "Ambient Temperature Load", "Noise Diode", "Long Cable Short Circuit"
+    };
+    
     // Use TOTAL_STEPS constant for nrows (calculated from FREQ_MIN, FREQ_MAX, FREQ_STEP)
     int nrows = TOTAL_STEPS;
     
-    printf("Data acquisition configuration:\n");
-    printf("  Rows per sweep: %d\n", nrows);
+    printf("========================================\n");
+    printf("Data Acquisition Configuration\n");
+    printf("========================================\n");
+    printf("  Cycle ID: %s\n", cycle_id);
+    printf("  State: %d (%s)\n", target_state, state_names[target_state]);
+    printf("  Sweeps to collect: %d\n", num_spectra);
+    printf("  Measurements per sweep: %d\n", nrows);
     printf("  Frequency range: %.0f-%.0f MHz\n", FREQ_MIN, FREQ_MAX);
     printf("  Frequency step: %.1f MHz\n", FREQ_STEP);
     printf("  Output directory: %s\n", OUTPUT_DIR);
+    printf("========================================\n");
 
     bufferA = MAKE_DATA_ARRAY(nrows);
     bufferB = MAKE_DATA_ARRAY(nrows);
@@ -782,25 +935,38 @@ int main(int argc, char **argv) {
         return 1;
     }
     
+    // Set cycle_id and state in both buffers
+    strncpy(bufferA->cycle_id, cycle_id, 31);
+    bufferA->cycle_id[31] = '\0';
+    bufferA->state = target_state;
+    
+    strncpy(bufferB->cycle_id, cycle_id, 31);
+    bufferB->cycle_id[31] = '\0';
+    bufferB->state = target_state;
+    
     INITIALIZE_ADS();
     
-    if (gpioInitialise() < 0){
-        printf("initialization of pigpio failed\n");
+    // Initialize pigpio for direct GPIO hardware access
+    // Note: Each process independently initializes/terminates GPIO access
+    if (gpioInitialise() < 0) {
+        fprintf(stderr, "Error: Failed to initialize pigpio for GPIO access.\n");
+        fprintf(stderr, "Make sure no other process has locked the GPIO hardware.\n");
         return 1;
     }
+    printf("✓ pigpio initialized for GPIO access\n");
     
-    // CRITICAL: Install signal handler AFTER gpioInitialise() 
-    // This overrides pigpio's default signal handler
+    // Install signal handler for graceful shutdown on Ctrl+C
     signal(SIGINT, Handler);
     signal(SIGTERM, Handler);
     printf("✓ Signal handlers installed for Ctrl+C\n");
     
-    // BCM numbering - Arduino Nano GPIO connections
-    gpioSetMode(GPIO_FREQ_INCREMENT, PI_OUTPUT); // Increment frequency (falling edge)
-    gpioSetMode(GPIO_FREQ_RESET, PI_OUTPUT);     // Reset frequency sweep (falling edge)
+    // Configure GPIO pins for LO board control (BCM numbering)
+    // Note: state_ctrl may have already configured these, but we ensure they're set correctly
+    gpioSetMode(GPIO_FREQ_INCREMENT, PI_OUTPUT); // Increment frequency (falling edge trigger)
+    gpioSetMode(GPIO_FREQ_RESET, PI_OUTPUT);     // Reset frequency sweep (falling edge trigger)
     gpioSetMode(GPIO_LO_POWER, PI_OUTPUT);       // LO board power control
 
-    // Initialize: FREQ_INCREMENT and FREQ_RESET idle HIGH, LO_POWER LOW (board off)
+    // Set LO control pins to idle HIGH state, LO_POWER LOW (board off initially)
     gpioWrite(GPIO_FREQ_INCREMENT, 1);
     gpioWrite(GPIO_FREQ_RESET, 1);
     gpioDelay(LO_SETTLE_US); // 5 ms settle
@@ -820,15 +986,18 @@ int main(int argc, char **argv) {
     printf("Starting main data acquisition loop...\n");
 
     writer_args_t writer_args = {
-        .nrows = nrows
+        .nrows = nrows,
+        .state = target_state
     };
+    strncpy(writer_args.cycle_id, cycle_id, 31);
+    writer_args.cycle_id[31] = '\0';
 
     // Create writer thread and store handle globally for signal handler
     pthread_create(&global_writer_thread, NULL, writer_thread_func, &writer_args);
 
     int current_buffer = 1;
     int row_index = 0;
-    int state2_detected_in_current_sweep = 0;
+    int sweeps_completed = 0;
     
     // Sweep timing variables
     clock_t sweep_start_time, sweep_end_time, program_start_time;
@@ -841,7 +1010,7 @@ int main(int argc, char **argv) {
     // Start program timer
     program_start_time = clock();
     
-    while (!exit_flag) {
+    while (!exit_flag && sweeps_completed < num_spectra) {
         clock_t start_time, end_time;
         double cpu_time_used;
         
@@ -849,10 +1018,21 @@ int main(int argc, char **argv) {
         //printf("LOOP BEGAN: %ld\n", (long)start_time);
         FITS_DATA *active_buffer = (current_buffer == 1) ? bufferA : bufferB;
         
-        // Read system voltage once at the start of each sweep (row_index == 0)
+        // Read system voltage and set sweep metadata at the start of each sweep
         if (row_index == 0) {
             active_buffer->sys_voltage = READ_SYSTEM_VOLTAGE();
-            state2_detected_in_current_sweep = 0;  // Reset flag for new sweep
+            
+            // Generate timestamp for this sweep
+            char *sweep_time = GET_TIME();
+            if (!sweep_time) {
+                fprintf(stderr, "Error: Failed to generate sweep timestamp\n");
+                break;
+            }
+            snprintf(active_buffer->timestamp, sizeof(active_buffer->timestamp), "%s.fits", sweep_time);
+            free(sweep_time);
+            
+            // Set spectrum index (0-based index for sweeps in this file)
+            active_buffer->spectrum_index = sweeps_completed;
             
             // Start timing this sweep (always record time if timing enabled)
             if (ENABLE_TIMING_OUTPUT || ENABLE_VERBOSE_SWEEP) {
@@ -861,7 +1041,8 @@ int main(int argc, char **argv) {
             
             if (ENABLE_VERBOSE_SWEEP) {
                 printf("\n========================================\n");
-                printf("Starting sweep #%d (LO freq: %.1f MHz)\n", sweep_count + 1, LO_FREQ);
+                printf("Starting sweep #%d/%d (State: %d, LO freq: %.1f MHz)\n", 
+                       sweeps_completed + 1, num_spectra, target_state, LO_FREQ);
                 printf("========================================\n");
             }
         }
@@ -878,11 +1059,6 @@ int main(int argc, char **argv) {
         if (result != 0) {
             printf("Error occurred in GET_DATA. Exiting main loop...\n");
             break;
-        }
-        
-        // Check if state 2 was detected in this measurement
-        if (atoi(active_buffer->data[row_index].STATE) == 2) {
-            state2_detected_in_current_sweep = 1;
         }
         
         row_index++;
@@ -905,7 +1081,7 @@ int main(int argc, char **argv) {
             
             if (ENABLE_TIMING_OUTPUT) {
                 printf("\n========================================\n");
-                printf("Sweep #%d COMPLETED\n", sweep_count);
+                printf("Sweep #%d/%d COMPLETED (State %d)\n", sweep_count, num_spectra, target_state);
                 printf("  Total measurements: %d\n", nrows);
                 printf("  Frequency range: %.1f - %.1f MHz\n", FREQ_MIN, FREQ_MAX);
                 printf("  Sweep duration: %.3f seconds\n", sweep_time_used);
@@ -919,23 +1095,16 @@ int main(int argc, char **argv) {
             pthread_cond_signal(&buffer_ready_cond);
             pthread_mutex_unlock(&buffer_mutex);
             
-            // If state 2 was detected in this sweep, increment counter
-            if (state2_detected_in_current_sweep) {
-                state2_sweeps_collected++;
+            sweeps_completed++;
+            
+            // Check if we've collected the requested number of sweeps
+            if (sweeps_completed >= num_spectra) {
                 printf("\n========================================\n");
-                printf("STATE 2 SWEEP COMPLETED: %d/%d sweeps collected\n", 
-                       state2_sweeps_collected, STATE2_MAX_SWEEPS);
+                printf("Target reached: Collected %d sweeps for State %d\n", sweeps_completed, target_state);
+                printf("Exiting data acquisition...\n");
                 printf("========================================\n");
-                
-                // Check if we've collected enough sweeps on state 2
-                if (state2_sweeps_collected > STATE2_MAX_SWEEPS) {
-                    printf("\n========================================\n");
-                    printf("STATE 2: Collected %d complete sweeps\n", state2_sweeps_collected);
-                    printf("All required data collected. Exiting...\n");
-                    printf("========================================\n");
-                    exit_flag = 1;
-                    break;  // Exit the main loop
-                }
+                exit_flag = 1;
+                break;  // Exit the main loop
             }
 
             current_buffer = (current_buffer == 1) ? 2 : 1;
@@ -984,8 +1153,9 @@ int main(int argc, char **argv) {
     printf("Step 4/4: Final Statistics Summary\n");
     printf("========================================\n");
     printf("Data Collection:\n");
-    printf("  Total sweeps completed: %d\n", sweep_count);
-    printf("  State 2 sweeps collected: %d\n", state2_sweeps_collected);
+    printf("  State: %d (%s)\n", target_state, state_names[target_state]);
+    printf("  Target sweeps: %d\n", num_spectra);
+    printf("  Sweeps completed: %d\n", sweep_count);
     printf("  Measurements per sweep: %d\n", nrows);
     printf("  Total measurements: %d\n", sweep_count * nrows);
     printf("\n");

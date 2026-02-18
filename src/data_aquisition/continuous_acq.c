@@ -61,6 +61,10 @@ int INTER_SWEEP_WAIT_S = 0.1;  // seconds
 
 double LO_FREQ = FREQ_MIN;
 
+// Global timezone offset in seconds (set via command line)
+int TIMEZONE_OFFSET_SECONDS = 0;
+char TIMEZONE_STRING[16] = "+00:00";
+
 /* Data from all three AD HATs at a single frequency */
 typedef struct {
     UDOUBLE ADHAT_1[ChannelNumber];
@@ -78,6 +82,7 @@ typedef struct {
     int spectrum_index;
     char cycle_id[32];
     int state;
+    char timezone[16];
 } FITS_DATA;
 
 /* ============= Double Buffer System and Thread Synchronization ============= */
@@ -126,6 +131,24 @@ void Handler(int signo) {
     printf("✓ LO board powered down\n");
 }
 
+/*
+ * Parse timezone string (e.g., "-07:00", "+05:30") into seconds offset
+ * Returns offset in seconds, or 0 if parsing fails
+ */
+int PARSE_TIMEZONE(const char *tz_str) {
+    if (!tz_str || strlen(tz_str) < 5) return 0;
+    
+    int sign = (tz_str[0] == '-') ? -1 : 1;
+    int hours = 0, minutes = 0;
+    
+    if (sscanf(tz_str + 1, "%d:%d", &hours, &minutes) != 2) {
+        fprintf(stderr, "Warning: Invalid timezone format '%s', using UTC\n", tz_str);
+        return 0;
+    }
+    
+    return sign * (hours * 3600 + minutes * 60);
+}
+
 /* Returns timestamp string "MMDDYYYY_HHMMSS" (caller must free) */
 char *GET_TIME(void)
 {
@@ -137,9 +160,10 @@ char *GET_TIME(void)
     }
     
     time_t now = time(NULL);
-    struct tm *t = localtime(&now);
+    now += TIMEZONE_OFFSET_SECONDS;  // Apply timezone offset
+    struct tm *t = gmtime(&now);     // Use gmtime since we already adjusted
     if (!t) {
-        fprintf(stderr, "Error: Failed to get local time\n");
+        fprintf(stderr, "Error: Failed to get time\n");
         free(buf);
         return NULL;
     }
@@ -164,7 +188,8 @@ char *GET_DATE(void)
     }
     
     time_t now = time(NULL);
-    struct tm *t = localtime(&now);
+    now += TIMEZONE_OFFSET_SECONDS;  // Apply timezone offset
+    struct tm *t = gmtime(&now);     // Use gmtime since we already adjusted
     if (!t) {
         fprintf(stderr, "Error: Failed to get local time\n");
         free(buf);
@@ -423,10 +448,6 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int state) {
         int n_spectra = 1;
         int n_lo_pts = TOTAL_STEPS;
         char data_fmt[] = "image_cube";
-        char timezone[] = "EST (GMT-5)";
-        char antenna[] = "Unknown";
-        char ant_size[] = "Unknown";
-        char ant_note[] = "See observation log";
         
         if (fits_update_key(fptr, TSTRING, "CYCLE_ID", input_struct->cycle_id, "Observation cycle identifier", &status) ||
             fits_update_key(fptr, TINT, "STATE", &input_struct->state, "Switch state", &status) ||
@@ -435,10 +456,7 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int state) {
             fits_update_key(fptr, TINT, "N_SPECTRA", &n_spectra, "Number of spectra in this file", &status) ||
             fits_update_key(fptr, TSTRING, "DATA_FMT", data_fmt, "Data format type", &status) ||
             fits_update_key(fptr, TDOUBLE, "SYSVOLT", &input_struct->sys_voltage, "System voltage (V)", &status) ||
-            fits_update_key(fptr, TSTRING, "TIMEZONE", timezone, "Local timezone", &status) ||
-            fits_update_key(fptr, TSTRING, "ANTENNA", antenna, "Antenna identifier", &status) ||
-            fits_update_key(fptr, TSTRING, "ANT_SIZE", ant_size, "Antenna size", &status) ||
-            fits_update_key(fptr, TSTRING, "ANT_NOTE", ant_note, "Antenna notes", &status)) {
+            fits_update_key(fptr, TSTRING, "TIMEZONE", input_struct->timezone, "Timezone offset", &status)) {
             fits_report_error(stderr, status);
             fits_close_file(fptr, &status);
             free(cycle_dir);
@@ -698,13 +716,14 @@ void* writer_thread_func(void *arg) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 4) {
-        fprintf(stderr, "Usage: %s <cycle_id> <state> <num_spectra>\n", argv[0]);
-        fprintf(stderr, "  <cycle_id>    : Cycle identifier (e.g., 'cycle_001')\n");
+    if (argc != 5) {
+        fprintf(stderr, "Usage: %s <cycle_id> <state> <num_spectra> <timezone>\n", argv[0]);
+        fprintf(stderr, "  <cycle_id>    : Cycle identifier (e.g., 'Cycle_001')\n");
         fprintf(stderr, "  <state>       : State value (0-7)\n");
         fprintf(stderr, "                  0=Antenna, 1=Open, 2=Short, 3=Long Cable Open,\n");
         fprintf(stderr, "                  4=Black Body, 5=Ambient, 6=Noise Diode, 7=Long Cable Short\n");
         fprintf(stderr, "  <num_spectra> : Number of sweeps/spectra to collect (positive integer)\n");
+        fprintf(stderr, "  <timezone>    : Timezone offset (e.g., -07:00, +00:00)\n");
         return 1;
     }
     
@@ -726,6 +745,13 @@ int main(int argc, char **argv) {
         return 1;
     }
     int num_spectra = (int)num_spectra_long;
+    
+    char *timezone = argv[4];
+    
+    // Parse and store timezone
+    TIMEZONE_OFFSET_SECONDS = PARSE_TIMEZONE(timezone);
+    strncpy(TIMEZONE_STRING, timezone, 15);
+    TIMEZONE_STRING[15] = '\0';
     
     const char *state_names[] = {
         "Antenna", "Open Circuit", "Short Circuit", "Long Cable Open Circuit",
@@ -757,10 +783,14 @@ int main(int argc, char **argv) {
     strncpy(bufferA->cycle_id, cycle_id, 31);
     bufferA->cycle_id[31] = '\0';
     bufferA->state = target_state;
+    strncpy(bufferA->timezone, TIMEZONE_STRING, 15);
+    bufferA->timezone[15] = '\0';
     
     strncpy(bufferB->cycle_id, cycle_id, 31);
     bufferB->cycle_id[31] = '\0';
     bufferB->state = target_state;
+    strncpy(bufferB->timezone, TIMEZONE_STRING, 15);
+    bufferB->timezone[15] = '\0';
     
     INITIALIZE_ADS();
     

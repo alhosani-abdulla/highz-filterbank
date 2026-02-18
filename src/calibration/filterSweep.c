@@ -6,6 +6,8 @@
 #include <fitsio.h>
 #include <time.h>
 #include <pigpio.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 // AD HAT driver (now in organized highz directory structure)
 #include "/home/peterson/highz/High-Precision_AD_HAT/c/lib/Driver/ADS1263.h"
@@ -13,7 +15,11 @@
 // Types and constants
 #define ChannelNumber 7
 
-// GPIO pin definitions for Arduino Nano + Local Oscillator control (BCM numbering)
+// GPIO pin definitions (BCM numbering)
+const int ADHAT1_DRYDPIN = 12;
+const int ADHAT2_DRYDPIN = 22;
+const int ADHAT3_DRYDPIN = 23;
+
 const int GPIO_FREQ_INCREMENT = 13;  // Increment frequency (falling edge trigger)
 const int GPIO_FREQ_RESET = 19;      // Reset frequency sweep (falling edge trigger)
 const int GPIO_LO_POWER = 26;        // LO board power control (HIGH=ON, LOW=OFF)
@@ -22,11 +28,10 @@ const int GPIO_LO_POWER = 26;        // LO board power control (HIGH=ON, LOW=OFF
 const double FREQ_MIN = 900.0;
 const double FREQ_MAX = 960.0;
 const double FREQ_STEP = 0.2;
-#define TOTAL_STEPS ((int)(((FREQ_MAX - FREQ_MIN) / FREQ_STEP) + 1))  // Dynamically calculated: (960-900)/0.2+1 = 301 measurements per sweep
+#define TOTAL_STEPS 301  // (FREQ_MAX - FREQ_MIN) / FREQ_STEP + 1 = (960-900)/0.2 + 1
 double LO_FREQ = FREQ_MIN;          // Start frequency initialized to FREQ_MIN
 
-// Output directory for FITS files
-const char *OUTPUT_DIR = "/media/peterson/INDURANCE/FilterCalibrations";
+const char *OUTPUT_DIR = "/media/peterson/INDURANCE/Data";
 
 // Configurable timing parameters
 // All times are in milliseconds unless noted otherwise.
@@ -34,20 +39,30 @@ int LO_SETTLE_US = 50;        // usleep in GET_DATA (50 microseconds)
 int PULSE_LOW_US = 50;      // gpioDelay for low pulse when incrementing (microseconds)
 int INTER_SWEEP_WAIT_S = 1;   // seconds between sweeps for LO stabilization
 
+const double VOLTAGE_DIVIDER_FACTOR = 11.0;
 
+// Global timezone offset in seconds (set via command line)
+int TIMEZONE_OFFSET_SECONDS = 0;
+char TIMEZONE_STRING[16] = "+00:00";
+
+/* Data from all three AD HATs at a single frequency */
 typedef struct {
     UDOUBLE ADHAT_1[ChannelNumber];
     UDOUBLE ADHAT_2[ChannelNumber];
     UDOUBLE ADHAT_3[ChannelNumber];
-    char TIME_RPI2[32];
-    char STATE[32];
-    char FREQUENCY[32];
-    char FILENAME[32];
 } GetAllValues;
 
+/* Complete frequency sweep data with metadata at sweep level */
 typedef struct {
-    GetAllValues *data;  // dynamically allocated array of GetAllValues
-    int nrows;
+    GetAllValues *data;               // Array of 301 measurements (one per frequency)
+    int nrows;                        // Number of measurements (301)
+    double sys_voltage;               // System voltage (read once per sweep)
+    char timestamp[32];               // Timestamp for this sweep
+    double frequencies[TOTAL_STEPS];  // Array of 301 LO frequencies
+    int spectrum_index;               // Index of this spectrum (0 for single sweep)
+    char cycle_id[32];                // Cycle identifier (e.g., "cycle_001")
+    char state[32];                   // State descriptor (e.g., "filtercal_+5dBm")
+    char timezone[16];                // Timezone string (e.g., "-07:00")
 } FITS_DATA;
 
 // Global flag for signal handling
@@ -60,19 +75,136 @@ void Handler(int signo) {
     exit_flag = 1;
 }
 
+/*
+ * Parse timezone string (e.g., "-07:00", "+05:30") into seconds offset
+ * Returns offset in seconds, or 0 if parsing fails
+ */
+int PARSE_TIMEZONE(const char *tz_str) {
+    if (!tz_str || strlen(tz_str) < 5) return 0;
+    
+    int sign = (tz_str[0] == '-') ? -1 : 1;
+    int hours = 0, minutes = 0;
+    
+    if (sscanf(tz_str + 1, "%d:%d", &hours, &minutes) != 2) {
+        fprintf(stderr, "Warning: Invalid timezone format '%s', using UTC\n", tz_str);
+        return 0;
+    }
+    
+    return sign * (hours * 3600 + minutes * 60);
+}
+
+/* Get current time with timezone offset applied */
 char *GET_TIME(void)
 {
     char *buf = malloc(64);
     if (!buf) return NULL;
     
     time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    strftime(buf, 64, "%m%d%Y_%H%M%S.fits", t);
+    now += TIMEZONE_OFFSET_SECONDS;  // Apply timezone offset
+    struct tm *t = gmtime(&now);     // Use gmtime since we already adjusted
+    strftime(buf, 64, "%m%d%Y_%H%M%S", t);
     return buf;
 }
 
+/* Returns date string "MMDDYYYY" (caller must free) */
+char *GET_DATE(void)
+{
+    char *buf = malloc(16);
+    if (!buf) {
+        fprintf(stderr, "Error: Failed to allocate memory for date buffer\n");
+        perror("GET_DATE malloc failed");
+        return NULL;
+    }
+    
+    time_t now = time(NULL);
+    now += TIMEZONE_OFFSET_SECONDS;  // Apply timezone offset
+    struct tm *t = gmtime(&now);     // Use gmtime since we already adjusted
+    if (!t) {
+        fprintf(stderr, "Error: Failed to get local time\n");
+        free(buf);
+        return NULL;
+    }
+    
+    if (strftime(buf, 16, "%m%d%Y", t) == 0) {
+        fprintf(stderr, "Error: Failed to format date string\n");
+        free(buf);
+        return NULL;
+    }
+
+    return buf;
+}
+
+/* Creates /output_dir/MMDDYYYY/ directory (caller must free returned path) */
+char *CREATE_DATE_DIRECTORY(const char *output_dir)
+{
+    char *date_str = GET_DATE();
+    if (!date_str) {
+        return NULL;
+    }
+    
+    size_t path_len = strlen(output_dir) + 1 + strlen(date_str) + 1;
+    char *full_path = malloc(path_len);
+    if (!full_path) {
+        fprintf(stderr, "Error: Failed to allocate memory for directory path\n");
+        free(date_str);
+        return NULL;
+    }
+    
+    snprintf(full_path, path_len, "%s/%s", output_dir, date_str);
+    free(date_str);
+    
+    struct stat st = {0};
+    if (stat(full_path, &st) == -1) {
+        if (mkdir(full_path, 0755) != 0) {
+            fprintf(stderr, "Error: Failed to create directory %s: %s\n", full_path, strerror(errno));
+            free(full_path);
+            return NULL;
+        }
+        printf("Created date directory: %s\n", full_path);
+    }
+    
+    return full_path;
+}
+
+/* Creates /output_dir/MMDDYYYY/cycle_XXX/ directory (caller must free returned path) */
+char *CREATE_CYCLE_DIRECTORY(const char *output_dir, const char *cycle_id)
+{
+    if (!output_dir || !cycle_id) {
+        fprintf(stderr, "Error: Invalid parameters for CREATE_CYCLE_DIRECTORY\n");
+        return NULL;
+    }
+    
+    char *date_dir = CREATE_DATE_DIRECTORY(output_dir);
+    if (!date_dir) {
+        return NULL;
+    }
+    
+    size_t path_len = strlen(date_dir) + 1 + strlen(cycle_id) + 1;
+    char *full_path = malloc(path_len);
+    if (!full_path) {
+        fprintf(stderr, "Error: Failed to allocate memory for cycle directory path\n");
+        free(date_dir);
+        return NULL;
+    }
+    
+    snprintf(full_path, path_len, "%s/%s", date_dir, cycle_id);
+    free(date_dir);
+    
+    struct stat st = {0};
+    if (stat(full_path, &st) == -1) {
+        if (mkdir(full_path, 0755) != 0) {
+            fprintf(stderr, "Error: Failed to create cycle directory %s: %s\n", full_path, strerror(errno));
+            free(full_path);
+            return NULL;
+        }
+        printf("Created cycle directory: %s\n", full_path);
+    }
+    
+    return full_path;
+}
+
 // Allocate FITS_DATA with dynamic array
-FITS_DATA* MAKE_DATA_ARRAY(int nrows) {
+FITS_DATA* MAKE_DATA_ARRAY(int nrows, const char *cycle_id) {
     FITS_DATA *data = malloc(sizeof(FITS_DATA));
     if (!data) {
         printf("Memory allocation for FITS_DATA failed!\n");
@@ -87,6 +219,15 @@ FITS_DATA* MAKE_DATA_ARRAY(int nrows) {
     }
     memset(data->data, 0, sizeof(GetAllValues) * nrows);
     data->nrows = nrows;
+    data->sys_voltage = 0.0;
+    data->spectrum_index = 0;
+    memset(data->timestamp, 0, sizeof(data->timestamp));
+    strncpy(data->cycle_id, cycle_id, 31);
+    data->cycle_id[31] = '\0';
+    memset(data->state, 0, sizeof(data->state));
+    strncpy(data->timezone, TIMEZONE_STRING, 15);
+    data->timezone[15] = '\0';
+    memset(data->frequencies, 0, sizeof(data->frequencies));
     return data;
 }
 
@@ -96,6 +237,24 @@ void FREE_DATA_ARRAY(FITS_DATA **ptr) {
         free(*ptr);
         *ptr = NULL;
     }
+}
+
+/* Reads system voltage from ADC channel 7 on HAT 3 */
+double READ_SYSTEM_VOLTAGE(void) {
+    UDOUBLE vltReading = ADS1263_GetChannalValue(7, ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
+    double adcVoltage;
+    
+    if ((vltReading >> 31) == 1){
+        adcVoltage = 5 * 2 - vltReading/2147483648.0 * 5;
+    }
+    else {
+        adcVoltage = vltReading/2147483647.8 * 5;
+    }
+    
+    double sysVoltage = adcVoltage * VOLTAGE_DIVIDER_FACTOR;
+    
+    printf("System voltage: %.2f V\n", sysVoltage);
+    return sysVoltage;
 }
 
 /*
@@ -109,38 +268,9 @@ int COLLECT_ADC_DATA(GetAllValues *data_row) {
     
     UBYTE ChannelList[ChannelNumber] = {0,1,2,3,4,5,6};
     
-    ADS1263_GetAll(ChannelList, data_row->ADHAT_1, ChannelNumber, 12, get_DRDYPIN(12));
-    ADS1263_GetAll(ChannelList, data_row->ADHAT_2, ChannelNumber, 22, get_DRDYPIN(22));
-    ADS1263_GetAll(ChannelList, data_row->ADHAT_3, ChannelNumber, 23, get_DRDYPIN(23));
-    
-    return 0;
-}
-
-/*
- * Stores metadata into data structure
- * Parameters:
- *   data_row: Pointer to GetAllValues structure to fill
- *   timestamp: Timestamp string
- *   power_dbm: Output power level
- * Returns: 0 on success
- */
-int STORE_METADATA(GetAllValues *data_row, const char *timestamp, int power_dbm) {
-    if (!data_row || !timestamp) return -1;
-    
-    // Store timestamp
-    strncpy(data_row->TIME_RPI2, timestamp, 31);
-    data_row->TIME_RPI2[31] = '\0';
-    
-    // Store power level
-    snprintf(data_row->STATE, 32, "%+d", power_dbm);
-    data_row->STATE[31] = '\0';
-    
-    // Store frequency
-    snprintf(data_row->FREQUENCY, 32, "%.1f", LO_FREQ);
-    
-    // Store filename
-    strncpy(data_row->FILENAME, timestamp, 31);
-    data_row->FILENAME[31] = '\0';
+    ADS1263_GetAll(ChannelList, data_row->ADHAT_1, ChannelNumber, ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
+    ADS1263_GetAll(ChannelList, data_row->ADHAT_2, ChannelNumber, ADHAT2_DRYDPIN, get_DRDYPIN(ADHAT2_DRYDPIN));
+    ADS1263_GetAll(ChannelList, data_row->ADHAT_3, ChannelNumber, ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
     
     return 0;
 }
@@ -172,216 +302,236 @@ int INCREMENT_LO_FREQUENCY(void) {
  * Parameters:
  *   input_struct: FITS_DATA structure containing data buffer
  *   i: Row index in the buffer where data will be stored
- *   power_dbm: Output power level for this measurement
+ *   power_dbm: Output power level for this measurement (for display only)
  * Returns: 0 on success, -1 on error
  */
 int GET_DATA(FITS_DATA *input_struct, int i, int power_dbm) {
-    clock_t start_time1, end_time1;
-    double cpu_time_used1;
-    
     // Validate inputs
     if (!input_struct) return -1;
     if (i < 0 || i >= input_struct->nrows) return -1;
     if (!input_struct->data) return -1;
     
-    // Get timestamp for this measurement
-    char *MEASURED_TIME = GET_TIME();
-    if (!MEASURED_TIME) {
-        fprintf(stderr, "Error: Failed to get timestamp\n");
-        return -1;
-    }
-    
     printf("========================================\n");
     printf("LO FREQ: %.1f MHz @ %+d dBm\n", LO_FREQ, power_dbm);   
     printf("========================================\n");
     
-    // Step 1: Collect ADC data from all three AD HATs at current frequency
+    // Collect ADC data from all three AD HATs at current frequency
     if (COLLECT_ADC_DATA(&input_struct->data[i]) != 0) {
         fprintf(stderr, "Error: Failed to collect ADC data\n");
-        free(MEASURED_TIME);
         return -1;
     }
     
-    start_time1 = clock();
+    // Store frequency in array (will be saved to FITS later)
+    input_struct->frequencies[i] = LO_FREQ;
     
-    // Step 2: Store all metadata in buffer
-    if (STORE_METADATA(&input_struct->data[i], MEASURED_TIME, power_dbm) != 0) {
-        fprintf(stderr, "Error: Failed to store metadata\n");
-        free(MEASURED_TIME);
-        return -1;
-    }
-    
-    free(MEASURED_TIME);
-    end_time1 = clock();
-
-    cpu_time_used1 = ((double) (end_time1-start_time1)) / CLOCKS_PER_SEC;
-
-    // Step 3: Increment frequency for next measurement (after reading current frequency)
+    // Increment frequency for next measurement
     INCREMENT_LO_FREQUENCY();
     
     return 0;
 }
 
+/*
+ * Save sweep data to FITS file with image cube format
+ * Parameters:
+ *   input_struct: FITS_DATA structure with sweep data
+ *   nrows: Number of frequency measurements (301)
+ *   power_dbm: Power level for this sweep (+5 or -4)
+ * Returns: 0 on success, -1 on error
+ */
 int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows, int power_dbm) {
     if (!input_struct) return -1;
-
-    fitsfile *fptr;
-    int status = 0;
-    int num = ChannelNumber;
-    
-    char *ttype[] = { "ADHAT_1", "ADHAT_2", "ADHAT_3", "TIME_RPI2", "POWER_DBM", "FREQUENCY", "FILENAME" };
-    char *tform[] = { "7K", "7K", "7K", "15A", "15A", "15A", "15A" };
-    char *tunit[] = { "", "", "", "", "dBm", "MHz" , "" };
-    
-    char full_filename[256];
-    char filename[64];
-    
-    // Get timestamp from first measurement
-    char base_filename[32];
-    strncpy(base_filename, input_struct->data[0].FILENAME, 31);
-    base_filename[31] = '\0';
-    
-    // Remove .fits extension if present
-    char *dot = strrchr(base_filename, '.');
-    if (dot) *dot = '\0';
-    
-    // Create filename with power level
-    snprintf(filename, sizeof(filename), "%s_%+ddBm.fits", base_filename, power_dbm);
-    snprintf(full_filename, sizeof(full_filename), "!%s/%s", OUTPUT_DIR, filename);
-    if (fits_create_file(&fptr, full_filename, &status))
-    {
-        fits_report_error(stderr, status);
-        return status;
-    }
-    
-    const char *extname = "FILTER BANK DATA";
-    if (fits_create_tbl(fptr, BINARY_TBL, 0, 7, ttype, tform, tunit, extname, &status))
-    {
-        fits_report_error(stderr, status);
-        return status;
-    }
-    
-    printf("FITS file successfully created!\n");    
-    
-    UDOUBLE *col1_data = malloc(sizeof(UDOUBLE) * nrows * num);
-    UDOUBLE *col2_data = malloc(sizeof(UDOUBLE) * nrows * num);
-    UDOUBLE *col3_data = malloc(sizeof(UDOUBLE) * nrows * num);
-    char *col4_data = malloc(nrows * 15 * sizeof(char));
-    char *col5_data = malloc(nrows * 15 * sizeof(char));
-    char *col6_data = malloc(nrows * 15 * sizeof(char));
-    char *col7_data = malloc(nrows * 15 * sizeof(char));
-    
-
-    if (!col1_data || !col2_data || !col3_data || !col4_data || !col5_data || !col6_data || !col7_data) {
-        printf("Memory allocation failed for column buffers\n");
-        if (col1_data) free(col1_data);
-        if (col2_data) free(col2_data);
-        if (col3_data) free(col3_data);
-        if (col4_data) free(col4_data);
-        if (col5_data) free(col5_data);
-        if (col6_data) free(col6_data);
-        if (col7_data) free(col6_data);
-        fits_close_file(fptr, &status);
+    if (nrows != TOTAL_STEPS) {
+        fprintf(stderr, "Error: Expected %d measurements, got %d\n", TOTAL_STEPS, nrows);
         return -1;
     }
 
-    for (int i = 0; i < nrows; i++) {
-        for (int j = 0; j < num; j++) {
-            col1_data[i * num + j] = input_struct->data[i].ADHAT_1[j];
-            col2_data[i * num + j] = input_struct->data[i].ADHAT_2[j];
-            col3_data[i * num + j] = input_struct->data[i].ADHAT_3[j];
+    fitsfile *fptr = NULL;
+    int status = 0;
+    
+    // Create directory structure
+    char *cycle_dir = CREATE_CYCLE_DIRECTORY(OUTPUT_DIR, input_struct->cycle_id);
+    if (!cycle_dir) {
+        fprintf(stderr, "Error: Failed to create cycle directory\n");
+        return -1;
+    }
+    
+    // Get current timestamp and system voltage
+    char *timestamp = GET_TIME();
+    if (!timestamp) {
+        fprintf(stderr, "Error: Failed to get timestamp\n");
+        free(cycle_dir);
+        return -1;
+    }
+    strncpy(input_struct->timestamp, timestamp, 31);
+    input_struct->timestamp[31] = '\0';
+    free(timestamp);
+    
+    input_struct->sys_voltage = READ_SYSTEM_VOLTAGE();
+    input_struct->spectrum_index = 0;  // Single spectrum per file
+    
+    // Set state string
+    snprintf(input_struct->state, sizeof(input_struct->state), "filtercal_%+ddBm", power_dbm);
+    
+    // Build filename: /Data/MMDDYYYY/Cycle_XXX/filtercal_±XdBm.fits
+    char filename[64];
+    char full_path[512];
+    snprintf(filename, sizeof(filename), "filtercal_%+ddBm.fits", power_dbm);
+    snprintf(full_path, sizeof(full_path), "!%s/%s", cycle_dir, filename);
+    
+    printf("Saving to: %s\n", full_path + 1);  // Skip '!' for display
+    
+    // Create FITS file with PRIMARY HDU
+    if (fits_create_file(&fptr, full_path, &status)) {
+        fits_report_error(stderr, status);
+        free(cycle_dir);
+        return -1;
+    }
+    
+    // Create minimal primary image (required by FITS standard)
+    long naxes[1] = {0};
+    if (fits_create_img(fptr, BYTE_IMG, 0, naxes, &status)) {
+        fits_report_error(stderr, status);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
+    }
+    
+    // Write PRIMARY HDU headers
+    if (fits_write_key(fptr, TSTRING, "CYCLE_ID", input_struct->cycle_id,
+                       "Cycle identifier", &status)) {
+        fits_report_error(stderr, status);
+    }
+    if (fits_write_key(fptr, TSTRING, "STATE", input_struct->state,
+                       "Calibration state", &status)) {
+        fits_report_error(stderr, status);
+    }
+    if (fits_write_key(fptr, TSTRING, "TIMESTAMP", input_struct->timestamp,
+                       "Sweep timestamp (MMDDYYYY_HHMMSS)", &status)) {
+        fits_report_error(stderr, status);
+    }
+    if (fits_write_key(fptr, TSTRING, "TIMEZONE", input_struct->timezone,
+                       "Timezone offset", &status)) {
+        fits_report_error(stderr, status);
+    }
+    int n_filters = 21;
+    if (fits_write_key(fptr, TINT, "N_FILTERS", &n_filters,
+                       "Number of filter channels", &status)) {
+        fits_report_error(stderr, status);
+    }
+    int n_lo_pts = TOTAL_STEPS;  // 301
+    if (fits_write_key(fptr, TINT, "N_LO_PTS", &n_lo_pts,
+                       "Number of LO frequency points", &status)) {
+        fits_report_error(stderr, status);
+    }
+    int n_spectra = 1;
+    if (fits_write_key(fptr, TINT, "N_SPECTRA", &n_spectra,
+                       "Number of spectra in this file", &status)) {
+        fits_report_error(stderr, status);
+    }
+    if (fits_write_key(fptr, TSTRING, "DATA_FMT", "image_cube",
+                       "Data format type", &status)) {
+        fits_report_error(stderr, status);
+    }
+    if (fits_write_key(fptr, TDOUBLE, "SYSVOLT", &input_struct->sys_voltage,
+                       "System voltage (V)", &status)) {
+        fits_report_error(stderr, status);
+    }
+    
+    // Create binary table extension with 5 columns
+    char *ttype[] = {"DATA_CUBE", "SPECTRUM_TIMESTAMP", "SPECTRUM_INDEX", "SYSVOLT", "LO_FREQUENCIES"};
+    char *tform[] = {"6321K", "32A", "J", "D", "301D"};  // 6321 = 301 freq × 21 channels
+    char *tunit[] = {"ADC", "", "", "V", "MHz"};
+    
+    const char *extname = "FILTER CALIBRATION DATA";
+    if (fits_create_tbl(fptr, BINARY_TBL, 0, 5, ttype, tform, tunit, extname, &status)) {
+        fits_report_error(stderr, status);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
+    }
+    
+    // Allocate and pack DATA_CUBE: 301 frequencies × 21 channels = 6321 values
+    const int n_channels = 21;
+    const int cube_size = TOTAL_STEPS * n_channels;  // 6321
+    UDOUBLE *data_cube = malloc(cube_size * sizeof(UDOUBLE));
+    if (!data_cube) {
+        fprintf(stderr, "Error: Failed to allocate data cube\n");
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
+    }
+    
+    // Pack cube: for each frequency, write all 21 channels
+    for (int freq_idx = 0; freq_idx < TOTAL_STEPS; freq_idx++) {
+        for (int ch = 0; ch < 7; ch++) {
+            data_cube[freq_idx * n_channels + ch] = input_struct->data[freq_idx].ADHAT_1[ch];
+        }
+        for (int ch = 0; ch < 7; ch++) {
+            data_cube[freq_idx * n_channels + 7 + ch] = input_struct->data[freq_idx].ADHAT_2[ch];
+        }
+        for (int ch = 0; ch < 7; ch++) {
+            data_cube[freq_idx * n_channels + 14 + ch] = input_struct->data[freq_idx].ADHAT_3[ch];
         }
     }
     
-    for (int i = 0; i < nrows; i++) {
-        memset(&col4_data[i * 15], ' ', 15);
-        if (input_struct->data[i].TIME_RPI2 == NULL){
-            fprintf(stderr, "null pointer to rpi2 time at index %d\n", i);
-        }
-        printf("buffer: %p\n", (void *)&input_struct->data[i].TIME_RPI2);
-        strncpy(&col4_data[i * 15], input_struct->data[i].TIME_RPI2, 15);
-        col4_data[i * 15 + 14] = '\0';
-        memset(&col5_data[i * 15], ' ', 15);
-        strncpy(&col5_data[i * 15], input_struct->data[i].STATE, 15);
-        col5_data[i * 15 + 14] = '\0';
-        memset(&col6_data[i * 15], ' ', 15);
-        strncpy(&col6_data[i * 15], input_struct->data[i].FREQUENCY, 15);
-        col6_data[i * 15 + 14] = '\0';
-        memset(&col7_data[i * 15], ' ', 15);
-        strncpy(&col7_data[i * 15], input_struct->data[i].FILENAME, 15);
-        col7_data[i * 15 + 14] = '\0';
+    // Build frequency array
+    for (int i = 0; i < TOTAL_STEPS; i++) {
+        input_struct->frequencies[i] = FREQ_MIN + i * FREQ_STEP;
     }
     
-    char **col4_ptrs = malloc(nrows * num * sizeof(char *));
-    char **col5_ptrs = malloc(nrows * num * sizeof(char *));
-    char **col6_ptrs = malloc(nrows * num * sizeof(char *));
-    char **col7_ptrs = malloc(nrows * num * sizeof(char *));
-    for (int i = 0; i < nrows * num; i++) {
-        col4_ptrs[i] = &col4_data[i * 15];
-        col5_ptrs[i] = &col5_data[i * 15];
-        col6_ptrs[i] = &col6_data[i * 15];
-        col7_ptrs[i] = &col7_data[i * 15];
-    }
-
-    if (fits_write_col(fptr, TUINT, 1, 1, 1, nrows * num, col1_data, &status)) {
+    // Write single row with all data
+    if (fits_write_col(fptr, TUINT, 1, 1, 1, cube_size, data_cube, &status)) {
         fits_report_error(stderr, status);
-        goto cleanup;
-    }
-    if (fits_write_col(fptr, TUINT, 2, 1, 1, nrows * num, col2_data, &status)) {
-        fits_report_error(stderr, status);
-        goto cleanup;
-    }
-    if (fits_write_col(fptr, TUINT, 3, 1, 1, nrows * num, col3_data, &status)) {
-        fits_report_error(stderr, status);
-        goto cleanup;
+        free(data_cube);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
     }
     
-    if (fits_write_col(fptr, TSTRING, 4, 1, 1, nrows, col4_ptrs, &status)) {
+    char *timestamp_ptr = input_struct->timestamp;
+    if (fits_write_col(fptr, TSTRING, 2, 1, 1, 1, &timestamp_ptr, &status)) {
         fits_report_error(stderr, status);
-        goto cleanup;
+        free(data_cube);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
     }
-    if (fits_write_col(fptr, TSTRING, 5, 1, 1, nrows, col5_ptrs, &status)) {
+    
+    if (fits_write_col(fptr, TINT32BIT, 3, 1, 1, 1, &input_struct->spectrum_index, &status)) {
         fits_report_error(stderr, status);
-        goto cleanup;
+        free(data_cube);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
     }
-    if (fits_write_col(fptr, TSTRING, 6, 1, 1, nrows, col6_ptrs, &status)) {
+    
+    if (fits_write_col(fptr, TDOUBLE, 4, 1, 1, 1, &input_struct->sys_voltage, &status)) {
         fits_report_error(stderr, status);
-        goto cleanup;
+        free(data_cube);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
     }
-    if (fits_write_col(fptr, TSTRING, 7, 1, 1, nrows, col7_ptrs, &status)) {
+    
+    if (fits_write_col(fptr, TDOUBLE, 5, 1, 1, TOTAL_STEPS, input_struct->frequencies, &status)) {
         fits_report_error(stderr, status);
-        goto cleanup;
+        free(data_cube);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
     }
-
-    if (fits_flush_file(fptr, &status)) {
-        fits_report_error(stderr, status);
-        goto cleanup;
-    }
-
+    
+    // Clean up
+    free(data_cube);
+    free(cycle_dir);
+    
     if (fits_close_file(fptr, &status)) {
         fits_report_error(stderr, status);
+        return -1;
     }
     
-    free(col1_data);
-    free(col2_data);
-    free(col3_data);
-    free(col4_ptrs);
-    free(col5_ptrs);
-    free(col6_ptrs);
-    free(col7_ptrs);
-
+    printf("✓ FITS file saved: %s\n", filename);
     return 0;
-
-cleanup:
-    free(col1_data);
-    free(col2_data);
-    free(col3_data);
-    free(col4_ptrs);
-    free(col5_ptrs);
-    free(col6_ptrs);
-    free(col7_ptrs);
-    fits_close_file(fptr, &status);
-    return status;
 }
 
 int INITIALIZE_ADS(void)
@@ -392,28 +542,28 @@ int INITIALIZE_ADS(void)
     printf("GPIO Initialized.\n");
     printf("Initializing SPI Interface...\n");
     
-    DEV_Module_Init(18, 12, get_DRDYPIN(12));
-    DEV_Module_Init(18, 22, get_DRDYPIN(22));
-    DEV_Module_Init(18, 23, get_DRDYPIN(23));
+    DEV_Module_Init(18, ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
+    DEV_Module_Init(18, ADHAT2_DRYDPIN, get_DRDYPIN(ADHAT2_DRYDPIN));
+    DEV_Module_Init(18, ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
     ADS1263_reset(18);
     
     printf("SPI Interface initialized. Initializing AD HATs...\n");
     
-    if(ADS1263_init_ADC1(ADS1263_38400SPS, 12) == 1) {
+    if(ADS1263_init_ADC1(ADS1263_38400SPS, ADHAT1_DRYDPIN) == 1) {
         printf("\r\n END \r\n");
-        DEV_Module_Exit(12, get_DRDYPIN(12));
+        DEV_Module_Exit(ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
         exit(0);
     }
     
-    if(ADS1263_init_ADC1(ADS1263_38400SPS, 22) == 1) {
+    if(ADS1263_init_ADC1(ADS1263_38400SPS, ADHAT2_DRYDPIN) == 1) {
         printf("\r\n END \r\n");
-        DEV_Module_Exit(22, get_DRDYPIN(22));
+        DEV_Module_Exit(ADHAT2_DRYDPIN, get_DRDYPIN(ADHAT2_DRYDPIN));
         exit(0);
     }
     
-    if(ADS1263_init_ADC1(ADS1263_38400SPS, 23) == 1) {
+    if(ADS1263_init_ADC1(ADS1263_38400SPS, ADHAT3_DRYDPIN) == 1) {
         printf("\r\n END \r\n");
-        DEV_Module_Exit(23, get_DRDYPIN(23));
+        DEV_Module_Exit(ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
         exit(0);
     }
     
@@ -427,9 +577,9 @@ int INITIALIZE_ADS(void)
 int CLOSE_GPIO(void)
 {
     printf("Shutting down all GPIOs...\n");
-    DEV_Module_Exit(18, 12);
-    DEV_Module_Exit(18, 22);
-    DEV_Module_Exit(18, 23);
+    DEV_Module_Exit(18, ADHAT1_DRYDPIN);
+    DEV_Module_Exit(18, ADHAT2_DRYDPIN);
+    DEV_Module_Exit(18, ADHAT3_DRYDPIN);
     SYSFS_GPIO_Release();
     printf("Shutdown complete.\n");
     return 0;
@@ -440,8 +590,25 @@ int main(int argc, char **argv) {
     time_t program_start_time = time(NULL);
     clock_t program_start_clock = clock();
 
+    // Check command-line arguments
+    if (argc != 3) {
+        printf("Usage: %s <cycle_id> <timezone>\n", argv[0]);
+        printf("Example: %s Cycle_001 -07:00\n", argv[0]);
+        printf("         %s Cycle_001 +00:00\n", argv[0]);
+        return 1;
+    }
+    char *cycle_id = argv[1];
+    char *timezone = argv[2];
+    
+    // Parse and store timezone
+    TIMEZONE_OFFSET_SECONDS = PARSE_TIMEZONE(timezone);
+    strncpy(TIMEZONE_STRING, timezone, 15);
+    TIMEZONE_STRING[15] = '\0';
+
     // Timing parameters are configurable in the source (no environment overrides)
     printf("\n=== Filter Calibration Sweep ===\n");
+    printf("Cycle ID: %s\n", cycle_id);
+    printf("Timezone: %s\n", TIMEZONE_STRING);
     printf("Frequency range: %.1f - %.1f MHz (step: %.1f MHz)\n", 
            FREQ_MIN, FREQ_MAX, FREQ_STEP);
     printf("Measurements per sweep: %d\n", TOTAL_STEPS);
@@ -456,7 +623,7 @@ int main(int argc, char **argv) {
             LO_SETTLE_US, PULSE_LOW_US, INTER_SWEEP_WAIT_S);
 
     // Allocate single buffer for one complete sweep
-    FITS_DATA *sweep_data = MAKE_DATA_ARRAY(nrows);
+    FITS_DATA *sweep_data = MAKE_DATA_ARRAY(nrows, cycle_id);
     if (!sweep_data) {
         printf("Failed to allocate sweep buffer\n");
         return 1;

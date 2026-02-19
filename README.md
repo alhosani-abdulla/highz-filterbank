@@ -9,6 +9,10 @@ highz-filterbank/
 ├── README.md           # This file
 ├── LICENSE             # MIT License
 ├── .gitignore          # Git ignore rules
+├── docs/               # Documentation
+│   ├── DATA_FORMAT.md     # FITS file format specification
+│   └── CYCLE_CONTROLLER.md # Automated cycle controller guide
+├── bin/                # Compiled binaries
 └── src/                # Source code
     ├── calibration/       # Calibration routines
     └── data_aquisition/   # Data acquisition modules
@@ -144,6 +148,15 @@ gcc -o src/data_aquisition/acq src/data_aquisition/continuous_acq.c \
 # Run data acquisition
 ./src/data_aquisition/acq [options]
 ```
+
+## Documentation
+
+Comprehensive documentation is available in the [`docs/`](docs/) directory:
+
+- **[DATA_FORMAT.md](docs/DATA_FORMAT.md)** - Detailed specification of the FITS file format, DATA_CUBE structure, and data loading examples
+- **[CYCLE_CONTROLLER.md](docs/CYCLE_CONTROLLER.md)** - Guide to the automated cycle controller for continuous operation
+
+For quick reference, see the [docs README](docs/README.md).
 
 ## Scientific Background
 

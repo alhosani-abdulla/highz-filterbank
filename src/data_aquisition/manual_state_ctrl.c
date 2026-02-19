@@ -1,4 +1,4 @@
-#include "state_ctrl.h"
+#include "manual_state_ctrl.h"
 
 volatile sig_atomic_t running = 1;
 volatile int current_state = 5;

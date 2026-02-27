@@ -161,7 +161,7 @@ def create_filtercal_heatmaps(filtercal_pos, filtercal_neg,
     fig_pos = go.Figure(data=go.Heatmap(
         z=volts_pos_T,
         x=lo_pos,
-        y=list(range(21)),
+        y=list(range(1, 22)),
         colorscale='Viridis',
         colorbar=dict(title="Voltage (V)"),
         hovertemplate='Filter: %{y}<br>' +
@@ -194,7 +194,7 @@ def create_filtercal_heatmaps(filtercal_pos, filtercal_neg,
     fig_neg = go.Figure(data=go.Heatmap(
         z=volts_neg_T,
         x=lo_neg,
-        y=list(range(21)),
+        y=list(range(1, 22)),
         colorscale='Viridis',
         colorbar=dict(title="Voltage (V)"),
         hovertemplate='Filter: %{y}<br>' +

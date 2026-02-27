@@ -4,6 +4,15 @@ This directory contains documentation for the High-Z Filterbank data acquisition
 
 ## Documentation Files
 
+### [HARDWARE.md](HARDWARE.md)
+Hardware configuration and wiring documentation:
+- ADC HAT stack layout and pin assignments
+- GPIO pin mappings for ADC control and filterbank
+- Filter connection mapping (21 filters across 3 ADCs)
+- Reference voltage configuration
+- Testing and troubleshooting procedures
+- Voltage monitor tool usage
+
 ### [DATA_FORMAT.md](DATA_FORMAT.md)
 Detailed documentation of the FITS file format used by the system:
 - File types (filter calibration, state data)
@@ -22,6 +31,11 @@ Documentation for the automated cycle controller:
 
 ## Quick Links
 
+**For Hardware Setup:**
+- See [HARDWARE.md](HARDWARE.md) for ADC HAT wiring and GPIO pin assignments
+- Use voltage monitor tool to test individual channels
+- Check reference voltage configuration before data collection
+
 **For Data Analysis:**
 - Start with [DATA_FORMAT.md](DATA_FORMAT.md) to understand how data is stored
 - See code examples for loading filtercal and state files
@@ -36,4 +50,5 @@ Documentation for the automated cycle controller:
 
 - Source code: `/src/calibration/filterSweep.c`, `/src/data_aquisition/continuous_acq.c`
 - Analysis tools: `Highz-EXP/src/filterbank/` (visualization and processing)
-- Hardware setup: See main README.md
+- Voltage monitor: `/home/peterson/highz/High-Precision_AD_HAT/c/bin/voltage_monitor`
+- Hardware driver: `/home/peterson/highz/High-Precision_AD_HAT/c/lib/Driver/ADS1263.c`

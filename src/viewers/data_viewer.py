@@ -380,14 +380,20 @@ def load_data(n_clicks, selected_date, selected_cycle, selected_state,
         status = (f"Loaded: {selected_state} | Cycle: {selected_cycle} | "
                  f"Spectra: {n_spectra} | {cal_status}")
         
-        # Store data
+        # Store only file paths and metadata (JSON-serializable)
         spectrum_storage = {
             'filepath': state_file,
             'n_spectra': n_spectra,
-            'current_spectrum': spectrum_data
+            'current_spectrum_index': 0
         }
         
-        return spectrum_storage, filtercal_data, slider_style, n_spectra - 1, marks, status
+        filtercal_storage = {
+            'pos_file': filtercal_files['pos'],
+            'neg_file': filtercal_files['neg'],
+            'has_calibration': filtercal_data is not None
+        } if filtercal_files['pos'] and filtercal_files['neg'] else None
+        
+        return spectrum_storage, filtercal_storage, slider_style, n_spectra - 1, marks, status
         
     except Exception as e:
         slider_style = {'padding': '10px', 'backgroundColor': '#ecf0f1', 
@@ -402,18 +408,13 @@ def load_data(n_clicks, selected_date, selected_cycle, selected_state,
     prevent_initial_call=True
 )
 def update_spectrum_index(spectrum_idx, spectrum_storage):
-    """Load different spectrum when slider changes"""
+    """Update spectrum index when slider changes"""
     if not spectrum_storage or spectrum_idx is None:
         return spectrum_storage
     
-    try:
-        filepath = spectrum_storage['filepath']
-        new_spectrum = io_utils.load_state_file(filepath, spectrum_index=spectrum_idx)
-        spectrum_storage['current_spectrum'] = new_spectrum
-        return spectrum_storage
-    except Exception as e:
-        print(f"Error loading spectrum {spectrum_idx}: {e}")
-        return spectrum_storage
+    # Just update the index - data will be reloaded when creating plots
+    spectrum_storage['current_spectrum_index'] = spectrum_idx
+    return spectrum_storage
 
 
 @app.callback(
@@ -427,11 +428,11 @@ def update_spectrum_index(spectrum_idx, spectrum_storage):
      Input('align-freq-min', 'value'),
      Input('align-freq-max', 'value')]
 )
-def create_plots(spectrum_storage, filtercal_data, view_mode, filtercal_mode,
+def create_plots(spectrum_storage, filtercal_storage, view_mode, filtercal_mode,
                 calib_toggles, filter_exclusions_str, align_freq_min, align_freq_max):
     """Generate plots based on loaded data and settings"""
     
-    if not spectrum_storage or 'current_spectrum' not in spectrum_storage:
+    if not spectrum_storage:
         empty_fig = go.Figure()
         empty_fig.update_layout(
             title="No data loaded",
@@ -440,7 +441,19 @@ def create_plots(spectrum_storage, filtercal_data, view_mode, filtercal_mode,
         )
         return html.Div([dcc.Graph(figure=empty_fig)])
     
-    spectrum_data = spectrum_storage['current_spectrum']
+    # Load the spectrum data
+    try:
+        filepath = spectrum_storage['filepath']
+        spectrum_idx = spectrum_storage['current_spectrum_index']
+        spectrum_data = io_utils.load_state_file(filepath, spectrum_index=spectrum_idx)
+    except Exception as e:
+        empty_fig = go.Figure()
+        empty_fig.update_layout(
+            title=f"Error loading spectrum: {str(e)}",
+            template="plotly_white",
+            height=400
+        )
+        return html.Div([dcc.Graph(figure=empty_fig)])
     
     # Parse filter exclusions
     excluded_filters = []
@@ -450,8 +463,30 @@ def create_plots(spectrum_storage, filtercal_data, view_mode, filtercal_mode,
         except ValueError:
             pass
     
-    # Get calibration if available
-    filter_cal = filtercal_data.get('calibration') if filtercal_data else None
+    # Load calibration if available
+    filter_cal = None
+    filtercal_pos = None
+    filtercal_neg = None
+    
+    if filtercal_storage and filtercal_storage['has_calibration']:
+        try:
+            filtercal_pos = io_utils.load_filtercal(filtercal_storage['pos_file'])
+            filtercal_neg = io_utils.load_filtercal(filtercal_storage['neg_file'])
+            
+            # Load S21 corrections if enabled
+            s21_data = None
+            if 's21' in calib_toggles:
+                from pathlib import Path
+                s21_dir = Path(__file__).parent.parent.parent / "characterization" / "s_parameters"
+                s21_data = io_utils.load_s21_corrections(str(s21_dir))
+            
+            # Build calibration
+            filter_cal = io_utils.build_filter_calibration(
+                filtercal_pos, filtercal_neg,
+                s21_data=s21_data
+            )
+        except Exception as e:
+            print(f"Error loading calibration: {e}")
     
     # Apply calibration to spectrum
     result = io_utils.apply_calibration_to_spectrum(
@@ -515,10 +550,7 @@ def create_plots(spectrum_storage, filtercal_data, view_mode, filtercal_mode,
         )
         
         # Create filtercal plots if available
-        if filtercal_data:
-            filtercal_pos = filtercal_data['pos']
-            filtercal_neg = filtercal_data['neg']
-            
+        if filtercal_pos and filtercal_neg:
             # Extract timestamps from filtercal metadata
             time_pos = filtercal_pos.get('timestamp', '')
             time_neg = filtercal_neg.get('timestamp', '')

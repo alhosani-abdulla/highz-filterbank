@@ -26,38 +26,37 @@
 /* Custom Hardware Driver */
 #include "/home/peterson/highz/High-Precision_AD_HAT/c/lib/Driver/ADS1263.h"
 
+/* Common highz constants and definitions */
+#include "highz_common.h"
+
 /* ============= Types and Constants ============= */
 
-#define ChannelNumber 7
+#define ChannelNumber ADC_CHANNEL_COUNT
 
-/* GPIO pin definitions (BCM numbering) */
-const int ADHAT1_DRYDPIN = 12;
-const int ADHAT2_DRYDPIN = 22;
-const int ADHAT3_DRYDPIN = 23;
+/* GPIO pin definitions from common header */
+const int ADHAT1_DRYDPIN = ADHAT1_DRDY_PIN;
+const int ADHAT2_DRYDPIN = ADHAT2_DRDY_PIN;
+const int ADHAT3_DRYDPIN = ADHAT3_DRDY_PIN;
 
-const int GPIO_FREQ_INCREMENT = 4;
-const int GPIO_FREQ_RESET = 5;
-const int GPIO_LO_POWER = 6;
+const int GPIO_FREQ_INCREMENT = ACQ_GPIO_FREQ_INCREMENT;
+const int GPIO_FREQ_RESET = ACQ_GPIO_FREQ_RESET;
+const int GPIO_LO_POWER = ACQ_GPIO_LO_POWER;
 
-/* Frequency Sweep Parameters: 650-936 MHz, 2 MHz steps */
-#define FREQ_MIN 650.0
-#define FREQ_MAX 936.0
-#define FREQ_STEP 2.0
-#define TOTAL_STEPS 144  // (FREQ_MAX - FREQ_MIN) / FREQ_STEP + 1
-
-const char *OUTPUT_DIR = "/media/peterson/INDURANCE/Data";
+/* Frequency Sweep Parameters from common header */
+#define FREQ_MIN ACQ_FREQ_MIN
+#define FREQ_MAX ACQ_FREQ_MAX
+#define FREQ_STEP ACQ_FREQ_STEP
+#define TOTAL_STEPS ACQ_TOTAL_STEPS
 
 /* Debug output flags */
 const int ENABLE_TIMING_OUTPUT = 1;
 const int ENABLE_VERBOSE_MEASUREMENT = 0;
 const int ENABLE_VERBOSE_SWEEP = 1;
 
-const double VOLTAGE_DIVIDER_FACTOR = 11.0;
-
-/* Timing parameters (microseconds unless noted) */
-int LO_SETTLE_US = 50;
-int PULSE_LOW_US = 50;
-int INTER_SWEEP_WAIT_S = 0.1;  // seconds
+/* Timing parameters from common header (can override) */
+int LO_SETTLE_US = DEFAULT_LO_SETTLE_US;
+int PULSE_LOW_US = DEFAULT_PULSE_LOW_US;
+int INTER_SWEEP_WAIT_S = 0.1;  // seconds (different from default)
 
 double LO_FREQ = FREQ_MIN;
 
@@ -348,16 +347,16 @@ int COLLECT_ADC_DATA(GetAllValues *data_row) {
     return 0;
 }
 
-/* Reads system voltage from ADC channel 7 on HAT 3 */
+/* Reads system voltage from ADC channel 7 on HAT 1 (top) */
 double READ_SYSTEM_VOLTAGE(void) {
-    UDOUBLE vltReading = ADS1263_GetChannalValue(7, ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
+    UDOUBLE vltReading = ADS1263_GetChannalValue(SYS_VOLTAGE_CHANNEL, ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
     double adcVoltage;
     
     if ((vltReading >> 31) == 1){
-        adcVoltage = 5 * 2 - vltReading/2147483648.0 * 5;
+        adcVoltage = ADC_REFERENCE_VOLTAGE * 2 - vltReading/2147483648.0 * ADC_REFERENCE_VOLTAGE;
     }
     else {
-        adcVoltage = vltReading/2147483647.8 * 5;
+        adcVoltage = vltReading/2147483647.8 * ADC_REFERENCE_VOLTAGE;
     }
     
     double sysVoltage = adcVoltage * VOLTAGE_DIVIDER_FACTOR;
@@ -489,7 +488,16 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int state) {
             fits_update_key(fptr, TINT, "N_FILTERS", (int*)&num_channels, "Number of filter channels", &status) ||
             fits_update_key(fptr, TINT, "N_LO_PTS", &n_lo_pts, "Number of LO frequency points", &status) ||
             fits_update_key(fptr, TINT, "N_SPECTRA", &n_spectra, "Number of spectra in this file", &status) ||
-            fits_update_key(fptr, TSTRING, "DATA_FMT", data_fmt, "Data format type", &status) ||
+            fits_update_key(fptr, TSTRING, "DATA_FMT", data_fmt, "Data format type", &status)) {
+            fits_report_error(stderr, status);
+            fits_close_file(fptr, &status);
+            free(cycle_dir);
+            return status;
+        }
+        
+        // Write ADC reference voltage and system voltage (separate to avoid const issues)
+        double adc_vref = ADC_REFERENCE_VOLTAGE;
+        if (fits_update_key(fptr, TDOUBLE, "ADC_VREF", &adc_vref, "ADC reference voltage (V)", &status) ||
             fits_update_key(fptr, TDOUBLE, "SYSVOLT", &input_struct->sys_voltage, "System voltage (V)", &status) ||
             fits_update_key(fptr, TSTRING, "TIMEZONE", input_struct->timezone, "Timezone offset", &status)) {
             fits_report_error(stderr, status);
@@ -499,7 +507,7 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int state) {
         }
         
         char *ttype[] = {"DATA_CUBE", "SPECTRUM_TIMESTAMP", "SPECTRUM_INDEX", "SYSVOLT", "LO_FREQUENCIES"};
-        char *tform[] = {"3024J", "25A", "1J", "1E", "144E"};
+        char *tform[] = {"3024V", "25A", "1J", "1E", "144E"};
         char *tunit[] = {"", "", "", "volts", "MHz"};
         const char *extname = "IMAGE CUBE DATA";
         

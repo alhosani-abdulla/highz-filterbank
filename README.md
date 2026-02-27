@@ -10,6 +10,7 @@ highz-filterbank/
 ├── LICENSE             # MIT License
 ├── .gitignore          # Git ignore rules
 ├── docs/               # Documentation
+│   ├── HARDWARE.md        # Hardware wiring and configuration
 │   ├── DATA_FORMAT.md     # FITS file format specification
 │   └── CYCLE_CONTROLLER.md # Automated cycle controller guide
 ├── bin/                # Compiled binaries
@@ -51,9 +52,12 @@ Real-time data acquisition from the filterbank spectrometer.
 
 ## Hardware Requirements
 
-- Raspberry Pi (tested on Pi 3/4)
-- Custom filterbank hardware with cavity filters
-- ADC interface for signal digitization
+- Raspberry Pi 4
+- Three Waveshare High-Precision AD HAT boards (ADS1263 ADCs)
+- Custom filterbank hardware with 21 cavity filters
+- Hardware modifications for multi-ADC addressing
+
+**See [docs/HARDWARE.md](docs/HARDWARE.md) for detailed wiring, pin assignments, and configuration.**
 
 ## Dependencies
 
@@ -153,6 +157,7 @@ gcc -o src/data_aquisition/acq src/data_aquisition/continuous_acq.c \
 
 Comprehensive documentation is available in the [`docs/`](docs/) directory:
 
+- **[HARDWARE.md](docs/HARDWARE.md)** - Hardware configuration, ADC HAT wiring, GPIO pin assignments, and testing procedures
 - **[DATA_FORMAT.md](docs/DATA_FORMAT.md)** - Detailed specification of the FITS file format, DATA_CUBE structure, and data loading examples
 - **[CYCLE_CONTROLLER.md](docs/CYCLE_CONTROLLER.md)** - Guide to the automated cycle controller for continuous operation
 

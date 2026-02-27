@@ -12,34 +12,32 @@
 // AD HAT driver (now in organized highz directory structure)
 #include "/home/peterson/highz/High-Precision_AD_HAT/c/lib/Driver/ADS1263.h"
 
+// Common highz constants and definitions
+#include "highz_common.h"
+
 // Types and constants
 #define ChannelNumber 7
 
-// GPIO pin definitions (BCM numbering)
-const int ADHAT1_DRYDPIN = 12;
-const int ADHAT2_DRYDPIN = 22;
-const int ADHAT3_DRYDPIN = 23;
+// GPIO pin definitions from common header
+const int ADHAT1_DRYDPIN = ADHAT1_DRDY_PIN;
+const int ADHAT2_DRYDPIN = ADHAT2_DRDY_PIN;
+const int ADHAT3_DRYDPIN = ADHAT3_DRDY_PIN;
 
-const int GPIO_FREQ_INCREMENT = 13;  // Increment frequency (falling edge trigger)
-const int GPIO_FREQ_RESET = 19;      // Reset frequency sweep (falling edge trigger)
-const int GPIO_LO_POWER = 26;        // LO board power control (HIGH=ON, LOW=OFF)
+const int GPIO_FREQ_INCREMENT = CALIB_GPIO_FREQ_INCREMENT;
+const int GPIO_FREQ_RESET = CALIB_GPIO_FREQ_RESET;
+const int GPIO_LO_POWER = CALIB_GPIO_LO_POWER;
 
-// Filter sweep Band B: 900-960 MHz, 0.2 MHz step (matches SweepFilter.ino)
-const double FREQ_MIN = 900.0;
-const double FREQ_MAX = 960.0;
-const double FREQ_STEP = 0.2;
-#define TOTAL_STEPS 301  // (FREQ_MAX - FREQ_MIN) / FREQ_STEP + 1 = (960-900)/0.2 + 1
-double LO_FREQ = FREQ_MIN;          // Start frequency initialized to FREQ_MIN
+// Filter sweep Band B from common header
+const double FREQ_MIN = CALIB_FREQ_MIN;
+const double FREQ_MAX = CALIB_FREQ_MAX;
+const double FREQ_STEP = CALIB_FREQ_STEP;
+#define TOTAL_STEPS CALIB_TOTAL_STEPS
+double LO_FREQ = CALIB_FREQ_MIN;
 
-const char *OUTPUT_DIR = "/media/peterson/INDURANCE/Data";
-
-// Configurable timing parameters
-// All times are in milliseconds unless noted otherwise.
-int LO_SETTLE_US = 50;        // usleep in GET_DATA (50 microseconds)
-int PULSE_LOW_US = 50;      // gpioDelay for low pulse when incrementing (microseconds)
-int INTER_SWEEP_WAIT_S = 1;   // seconds between sweeps for LO stabilization
-
-const double VOLTAGE_DIVIDER_FACTOR = 11.0;
+// Configurable timing parameters from common header
+int LO_SETTLE_US = DEFAULT_LO_SETTLE_US;
+int PULSE_LOW_US = DEFAULT_PULSE_LOW_US;
+int INTER_SWEEP_WAIT_S = DEFAULT_INTER_SWEEP_WAIT_S;
 
 // Global timezone offset in seconds (set via command line)
 int TIMEZONE_OFFSET_SECONDS = 0;
@@ -50,6 +48,7 @@ typedef struct {
     UDOUBLE ADHAT_1[ChannelNumber];
     UDOUBLE ADHAT_2[ChannelNumber];
     UDOUBLE ADHAT_3[ChannelNumber];
+    UDOUBLE log_detector;  // Log detector reading (channel 7, ADHAT2)
 } GetAllValues;
 
 /* Complete frequency sweep data with metadata at sweep level */
@@ -274,16 +273,16 @@ void FREE_DATA_ARRAY(FITS_DATA **ptr) {
     }
 }
 
-/* Reads system voltage from ADC channel 7 on HAT 3 */
+/* Reads system voltage from ADC channel 7 on HAT 1 (top) */
 double READ_SYSTEM_VOLTAGE(void) {
-    UDOUBLE vltReading = ADS1263_GetChannalValue(7, ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
+    UDOUBLE vltReading = ADS1263_GetChannalValue(SYS_VOLTAGE_CHANNEL, ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
     double adcVoltage;
     
     if ((vltReading >> 31) == 1){
-        adcVoltage = 5 * 2 - vltReading/2147483648.0 * 5;
+        adcVoltage = ADC_REFERENCE_VOLTAGE * 2 - vltReading/2147483648.0 * ADC_REFERENCE_VOLTAGE;
     }
     else {
-        adcVoltage = vltReading/2147483647.8 * 5;
+        adcVoltage = vltReading/2147483647.8 * ADC_REFERENCE_VOLTAGE;
     }
     
     double sysVoltage = adcVoltage * VOLTAGE_DIVIDER_FACTOR;
@@ -293,7 +292,7 @@ double READ_SYSTEM_VOLTAGE(void) {
 }
 
 /*
- * Collects ADC data from all three AD HATs
+ * Collects ADC data from all three AD HATs including log detector
  * Parameters:
  *   data_row: Pointer to GetAllValues structure to store the data
  * Returns: 0 on success, -1 on failure
@@ -303,9 +302,15 @@ int COLLECT_ADC_DATA(GetAllValues *data_row) {
     
     UBYTE ChannelList[ChannelNumber] = {0,1,2,3,4,5,6};
     
+    // Read filter channels from all three ADCs
     ADS1263_GetAll(ChannelList, data_row->ADHAT_1, ChannelNumber, ADHAT1_DRYDPIN, get_DRDYPIN(ADHAT1_DRYDPIN));
     ADS1263_GetAll(ChannelList, data_row->ADHAT_2, ChannelNumber, ADHAT2_DRYDPIN, get_DRDYPIN(ADHAT2_DRYDPIN));
     ADS1263_GetAll(ChannelList, data_row->ADHAT_3, ChannelNumber, ADHAT3_DRYDPIN, get_DRDYPIN(ADHAT3_DRYDPIN));
+    
+    // Read log detector (channel 7 on middle ADC)
+    data_row->log_detector = ADS1263_GetChannalValue(LOG_DETECTOR_CHANNEL, 
+                                                      ADHAT2_DRYDPIN, 
+                                                      get_DRDYPIN(ADHAT2_DRYDPIN));
     
     return 0;
 }
@@ -471,14 +476,19 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows, int power_dbm) {
                        "System voltage (V)", &status)) {
         fits_report_error(stderr, status);
     }
+    double adc_refvolt = ADC_REFERENCE_VOLTAGE;
+    if (fits_write_key(fptr, TDOUBLE, "ADC_REFV", &adc_refvolt,
+                       "ADC reference voltage (V)", &status)) {
+        fits_report_error(stderr, status);
+    }
     
-    // Create binary table extension with 5 columns
-    char *ttype[] = {"DATA_CUBE", "SPECTRUM_TIMESTAMP", "SPECTRUM_INDEX", "SYSVOLT", "LO_FREQUENCIES"};
-    char *tform[] = {"6321K", "32A", "J", "D", "301D"};  // 6321 = 301 freq × 21 channels
-    char *tunit[] = {"ADC", "", "", "V", "MHz"};
+    // Create binary table extension with 7 columns (added LOG_DETECTOR and ADC_REFVOLT)
+    char *ttype[] = {"DATA_CUBE", "SPECTRUM_TIMESTAMP", "SPECTRUM_INDEX", "SYSVOLT", "LO_FREQUENCIES", "LOG_DETECTOR", "ADC_REFVOLT"};
+    char *tform[] = {"6321K", "32A", "J", "D", "301D", "301K", "D"};  // 6321 = 301 freq × 21 channels
+    char *tunit[] = {"ADC", "", "", "V", "MHz", "ADC", "V"};
     
     const char *extname = "FILTER CALIBRATION DATA";
-    if (fits_create_tbl(fptr, BINARY_TBL, 0, 5, ttype, tform, tunit, extname, &status)) {
+    if (fits_create_tbl(fptr, BINARY_TBL, 0, 7, ttype, tform, tunit, extname, &status)) {
         fits_report_error(stderr, status);
         fits_close_file(fptr, &status);
         free(cycle_dir);
@@ -549,6 +559,38 @@ int SAVE_OUTPUT(FITS_DATA* input_struct, int nrows, int power_dbm) {
     }
     
     if (fits_write_col(fptr, TDOUBLE, 5, 1, 1, TOTAL_STEPS, input_struct->frequencies, &status)) {
+        fits_report_error(stderr, status);
+        free(data_cube);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
+    }
+    
+    // Allocate and pack log detector data (one value per frequency)
+    UDOUBLE *log_detector_data = malloc(TOTAL_STEPS * sizeof(UDOUBLE));
+    if (!log_detector_data) {
+        fprintf(stderr, "Error: Failed to allocate log detector array\n");
+        free(data_cube);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
+    }
+    for (int i = 0; i < TOTAL_STEPS; i++) {
+        log_detector_data[i] = input_struct->data[i].log_detector;
+    }
+    
+    if (fits_write_col(fptr, TUINT, 6, 1, 1, TOTAL_STEPS, log_detector_data, &status)) {
+        fits_report_error(stderr, status);
+        free(log_detector_data);
+        free(data_cube);
+        fits_close_file(fptr, &status);
+        free(cycle_dir);
+        return -1;
+    }
+    free(log_detector_data);
+    
+    // Write ADC reference voltage (single value)
+    if (fits_write_col(fptr, TDOUBLE, 7, 1, 1, 1, &adc_refvolt, &status)) {
         fits_report_error(stderr, status);
         free(data_cube);
         fits_close_file(fptr, &status);

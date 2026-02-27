@@ -15,6 +15,7 @@ from datetime import datetime
 import numpy as np
 from dash import Dash, dcc, html, Input, Output
 import plotly.graph_objs as go
+import traceback
 
 # Import utilities
 import sys
@@ -24,7 +25,7 @@ from utilities import io_utils, plot_utils
 # Configuration defaults
 DEFAULT_DATA_DIR = "/media/peterson/INDURANCE/Data"
 DEFAULT_S21_DIR = "/home/peterson/highz/highz-filterbank/characterization/s_parameters"
-DEFAULT_REFRESH_INTERVAL = 2000  # milliseconds (2 seconds)
+DEFAULT_REFRESH_INTERVAL = 3000  # milliseconds (3 seconds)
 
 # Calibration alignment defaults
 DEFAULT_ALIGN_FREQ_MIN = 50  # MHz
@@ -143,7 +144,9 @@ app.layout = html.Div([
 
 
 def find_most_recent_cycle(data_dir):
-    """Find the most recently modified cycle directory"""
+    """Find the most recently modified cycle directory with valid data"""
+    from astropy.io import fits
+    
     date_dirs = []
     if os.path.exists(data_dir):
         for entry in os.listdir(data_dir):
@@ -165,8 +168,22 @@ def find_most_recent_cycle(data_dir):
     if not all_cycles:
         return None
     
-    # Return most recently modified
-    return max(all_cycles, key=os.path.getmtime)
+    # Sort by modification time (most recent first)
+    all_cycles.sort(key=os.path.getmtime, reverse=True)
+    
+    # Return first cycle that has at least one state file with data
+    for cycle in all_cycles:
+        state_files = glob.glob(os.path.join(cycle, "state_*.fits"))
+        for f in state_files:
+            try:
+                with fits.open(f) as hdul:
+                    if hdul[1].data is not None and len(hdul[1].data) > 0:
+                        return cycle  # Found a cycle with valid data
+            except Exception:
+                continue
+    
+    # If no cycles with data found, return None
+    return None
 
 
 def find_latest_spectrum(cycle_dir):
@@ -174,18 +191,28 @@ def find_latest_spectrum(cycle_dir):
     Find the most recent spectrum in the most recent state file.
     Returns (state_file_path, spectrum_index, total_spectra)
     """
-    state_files = glob.glob(os.path.join(cycle_dir, "state_*.fits"))
-    state_files = [f for f in state_files if os.path.getsize(f) > 0]
+    from astropy.io import fits
     
-    if not state_files:
+    state_files = glob.glob(os.path.join(cycle_dir, "state_*.fits"))
+    
+    # Filter out files with no actual data (empty FITS tables)
+    valid_files = []
+    for f in state_files:
+        try:
+            with fits.open(f) as hdul:
+                if hdul[1].data is not None and len(hdul[1].data) > 0:
+                    valid_files.append(f)
+        except Exception:
+            continue
+    
+    if not valid_files:
         return None, 0, 0
     
-    # Get most recently modified state file
-    latest_state = max(state_files, key=os.path.getmtime)
+    # Get most recently modified state file with data
+    latest_state = max(valid_files, key=os.path.getmtime)
     
     # Check how many spectra are in it
     try:
-        from astropy.io import fits
         with fits.open(latest_state) as hdul:
             n_spectra = hdul[0].header.get('N_SPECTRA', len(hdul[1].data))
         
@@ -257,8 +284,8 @@ def update_refresh_interval(interval_seconds):
      Input('view-mode', 'value'),
      Input('filtercal-mode', 'value'),
      Input('calibration-toggles', 'value'),
-     Input('filter-exclusions', 'value')],
-    [Input('data-dir-store', 'data'),
+     Input('filter-exclusions', 'value'),
+     Input('data-dir-store', 'data'),
      Input('s21-dir-store', 'data'),
      Input('align-freq-min-store', 'data'),
      Input('align-freq-max-store', 'data')]
@@ -268,8 +295,14 @@ def update_live_view(n_intervals, view_mode, filtercal_mode, calib_toggles,
                      align_freq_min, align_freq_max):
     """Auto-refresh and update plots with latest data"""
     
+    # Debug logging
+    print(f"\n=== UPDATE CALLED (interval {n_intervals}) ===")
+    print(f"View mode: {view_mode}")
+    print(f"Data dir: {data_dir}")
+    
     # Find most recent cycle
     cycle_dir = find_most_recent_cycle(data_dir)
+    print(f"Found cycle: {cycle_dir}")
     
     if not cycle_dir:
         empty_fig = go.Figure()
@@ -432,13 +465,15 @@ def update_live_view(n_intervals, view_mode, filtercal_mode, calib_toggles,
         return plot_content, status, last_update
         
     except Exception as e:
+        print(f"ERROR in callback: {e}")
+        print(traceback.format_exc())
         empty_fig = go.Figure()
         empty_fig.update_layout(
             title=f"Error loading data: {str(e)}",
             template="plotly_white",
             height=400
         )
-        status = "❌ Error"
+        status = f"❌ Error: {str(e)[:50]}"
         last_update = f"Last checked: {datetime.now().strftime('%H:%M:%S')}"
         return html.Div([dcc.Graph(figure=empty_fig)]), status, last_update
 

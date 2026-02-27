@@ -2,7 +2,7 @@
 * HIGHZ AUTOMATED CYCLE CONTROLLER
 * 
 * Manages continuous cycle execution with persistent state tracking.
-* Runs continuously on startup, executing state sequence 1→2→3→4→5→6→7→0
+* Runs continuously on startup, executing state sequence 2→3→4→5→6→7→1→0
 * for each cycle.
 *
 * Usage: sudo ./bin/cycle_control --timezone <offset> --spectra-calib <count> --spectra-antenna <count>
@@ -20,8 +20,11 @@
 #include <stdarg.h>
 #include <pigpio.h>
 
+// Common highz constants
+#include "highz_common.h"
+
 // GPIO pins for state control (active-low logic)
-#define BIT_0 21
+#define BIT_0 20
 #define BIT_1 24
 #define BIT_2 27
 
@@ -31,8 +34,8 @@
 #define BASE_DIR "/media/peterson/INDURANCE/Data"
 #define LOG_DIR "/media/peterson/INDURANCE/Logs"
 
-// State sequence: 1→2→3→4→5→6→7→0
-static const int STATE_SEQUENCE[] = {1, 2, 3, 4, 5, 6, 7, 0};
+// State sequence: 2→3→4→5→6→7→1→0
+static const int STATE_SEQUENCE[] = {2, 3, 4, 5, 6, 7, 1, 0};
 static const int SEQUENCE_LENGTH = 8;
 
 // Global variables
@@ -293,9 +296,10 @@ void CREATE_METADATA_FILE(const char* cycle_dir, const CycleMetadata* metadata) 
     fprintf(fp, "  \"start_time\": \"%s\",\n", metadata->start_time);
     fprintf(fp, "  \"end_time\": \"%s\",\n", metadata->end_time);
     fprintf(fp, "  \"timezone\": \"%s\",\n", metadata->timezone);
-    fprintf(fp, "  \"state_sequence\": [1, 2, 3, 4, 5, 6, 7, 0],\n");
+    fprintf(fp, "  \"state_sequence\": [2, 3, 4, 5, 6, 7, 1, 0],\n");
     fprintf(fp, "  \"spectra_calib\": %d,\n", SPECTRA_CALIB);
     fprintf(fp, "  \"spectra_antenna\": %d,\n", SPECTRA_ANTENNA);
+    fprintf(fp, "  \"adc_reference_voltage\": %.2f,\n", ADC_REFERENCE_VOLTAGE);
     fprintf(fp, "  \"antenna\": {\n");
     fprintf(fp, "    \"antenna_id\": \"%s\",\n", metadata->antenna.antenna_id);
     fprintf(fp, "    \"site_name\": \"%s\",\n", metadata->antenna.site_name);
@@ -417,7 +421,7 @@ int EXECUTE_CYCLE(const char* cycle_id, const char* timezone, const AntennaConfi
     strcpy(metadata.timezone, timezone);
     metadata.antenna = *antenna_config;
     
-    // Execute state sequence: 1→2→3→4→5→6→7→0
+    // Execute state sequence: 2→3→4→5→6→7→1→0
     for (int i = 0; i < SEQUENCE_LENGTH && running; i++) {
         int state = STATE_SEQUENCE[i];
         
@@ -486,7 +490,7 @@ int main(int argc, char* argv[]) {
     LOG_PRINT("Timezone: %s (offset: %d seconds)\n", TIMEZONE_STRING, TIMEZONE_OFFSET_SECONDS);
     LOG_PRINT("Spectra (calibration states 1-7): %d\n", SPECTRA_CALIB);
     LOG_PRINT("Spectra (antenna state 0): %d\n", SPECTRA_ANTENNA);
-    LOG_PRINT("State sequence: 1→2→3→4→5→6→7→0\n");
+    LOG_PRINT("State sequence: 2→3→4→5→6→7→1→0\n");
     LOG_PRINT("========================================\n\n");
     
     // Initialize GPIO

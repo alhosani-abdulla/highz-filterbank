@@ -1,0 +1,30 @@
+Log Detector Calibration Fit Parameters
+======================================================================
+
+LINEAR REGION (Auto-detected best range)
+----------------------------------------------------------------------
+Power range:     -28.00 to -14.00 dBm
+Number of points: 15
+
+LINEAR FIT PARAMETERS
+----------------------------------------------------------------------
+Model:           V = slope × P + intercept
+Slope:           -0.02439651 V/dBm
+                 -24.3965 mV/dBm
+Intercept:       0.55025195 V
+R²:              0.9999840947
+RMS residual:    0.00042037 V
+
+INVERSE (Voltage to Power):
+P = (V - 0.55025195) / -0.02439651
+
+SENSITIVITY
+----------------------------------------------------------------------
+Mean (linear region): -24.5652 mV/dBm
+Std dev:              0.4356 mV/dBm
+Variation:            1.77%
+
+FULL DATA RANGE
+----------------------------------------------------------------------
+Power:           -100.00 to 17.00 dBm
+Voltage:         0.508542 to 2.064450 V

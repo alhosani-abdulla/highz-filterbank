@@ -9,8 +9,7 @@
 ADHAT_DIR = /home/peterson/highz/High-Precision_AD_HAT/c
 
 # Source directories
-SRC_CALIB = src/calibration
-SRC_ACQ = src/data_aquisition
+SRC_INSTRUMENT = src/instrument
 
 # Output directory for binaries
 BIN_DIR = bin
@@ -20,7 +19,7 @@ BIN_DIR = bin
 # ============================================================================
 
 CC = gcc
-CFLAGS = -g -Wall -I$(ADHAT_DIR)/lib/Config -I$(ADHAT_DIR)/lib/Driver
+CFLAGS = -g -Wall -I$(ADHAT_DIR)/lib/Config -I$(ADHAT_DIR)/lib/Driver -I./src
 
 # Libraries required for compilation
 LIBS = -lgpiod -lcfitsio -lpigpio -lrt -lpthread -lm
@@ -53,25 +52,25 @@ $(BIN_DIR):
 	@echo "Created bin directory"
 
 # Calibration program (filter sweep)
-$(CALIB_TARGET): $(SRC_CALIB)/filterSweep.c $(ADHAT_SOURCES)
+$(CALIB_TARGET): $(SRC_INSTRUMENT)/filterSweep.c $(ADHAT_SOURCES)
 	@echo "Compiling filter sweep calibration program..."
 	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 	@echo "✓ Calibration binary created: $(CALIB_TARGET)"
 
 # Data acquisition program
-$(ACQ_TARGET): $(SRC_ACQ)/continuous_acq.c $(ADHAT_SOURCES)
+$(ACQ_TARGET): $(SRC_INSTRUMENT)/continuous_acq.c $(ADHAT_SOURCES)
 	@echo "Compiling data acquisition program..."
 	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 	@echo "✓ Data acquisition binary created: $(ACQ_TARGET)"
 
 # Manual state control program (diagnostic tool)
-$(MANUAL_STATE_TARGET): $(SRC_ACQ)/manual_state_ctrl.c
+$(MANUAL_STATE_TARGET): $(SRC_INSTRUMENT)/manual_state_ctrl.c
 	@echo "Compiling manual state control program..."
 	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 	@echo "✓ Manual state control binary created: $(MANUAL_STATE_TARGET)"
 
 # Automated cycle controller
-$(CYCLE_CTRL_TARGET): $(SRC_ACQ)/cycle_control.c
+$(CYCLE_CTRL_TARGET): $(SRC_INSTRUMENT)/cycle_control.c
 	@echo "Compiling automated cycle controller..."
 	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 	@echo "✓ Cycle controller binary created: $(CYCLE_CTRL_TARGET)"

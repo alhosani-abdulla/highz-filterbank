@@ -88,7 +88,7 @@ def create_voltage_plot(frequencies, voltages, filter_indices,
     
     fig = go.Figure()
     
-    for filt_num in range(21):
+    for filt_num in range(1, 22):
         if filt_num in excluded_filters or filt_num not in filter_data:
             continue
         
@@ -154,7 +154,7 @@ def create_power_plot(frequencies, powers, filter_indices,
     
     fig = go.Figure()
     
-    for filt_num in range(21):
+    for filt_num in range(1, 22):
         if filt_num in excluded_filters or filt_num not in filter_data:
             continue
         

@@ -25,14 +25,14 @@ S21 transmission measurements from the Local Oscillator (LO) output to each filt
 ```
 filter_XX.s2p
 ```
-Where `XX` is the filter number (00-20) for the 21 cavity filters.
+Where `XX` is the filter number (01-21) for the 21 cavity filters.
 
 **Filter Mapping:**
-- Filter 00: 904.0 MHz center
-- Filter 01: 906.6 MHz center
-- Filter 02: 909.2 MHz center
+- Filter 01: 904.0 MHz center
+- Filter 02: 906.6 MHz center
+- Filter 03: 909.2 MHz center
 - ...
-- Filter 20: 956.0 MHz center
+- Filter 21: 956.0 MHz center
 
 (2.6 MHz spacing between adjacent filters)
 

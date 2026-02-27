@@ -47,7 +47,7 @@ def create_filtercal_line_plots(filtercal_pos, filtercal_neg,
     
     # Positive power plot
     fig_pos = go.Figure()
-    for filt_idx in range(21):
+    for filt_idx in range(1, 22):
         fig_pos.add_trace(go.Scatter(
             x=lo_pos,
             y=volts_pos[:, filt_idx],
@@ -83,7 +83,7 @@ def create_filtercal_line_plots(filtercal_pos, filtercal_neg,
     
     # Negative power plot
     fig_neg = go.Figure()
-    for filt_idx in range(21):
+    for filt_idx in range(1, 22):
         fig_neg.add_trace(go.Scatter(
             x=lo_neg,
             y=volts_neg[:, filt_idx],

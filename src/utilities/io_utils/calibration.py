@@ -41,7 +41,7 @@ def load_s21_corrections(s21_dir):
     
     s21_data = {}
     
-    for filt_num in range(21):
+    for filt_num in range(1, 22):
         s2p_file = s21_dir / f"filter_{filt_num:02d}.s2p"
         
         if not s2p_file.exists():
@@ -118,7 +118,7 @@ def build_filter_calibration(filtercal_pos, filtercal_neg,
     volts_pos = adc_counts_to_voltage(filtercal_pos['data'], ref=ref_voltage)
     volts_neg = adc_counts_to_voltage(filtercal_neg['data'], ref=ref_voltage)
     
-    for filt_num in range(21):
+    for filt_num in range(1, 22):
         center_freq = filter_centers[filt_num]
         
         # Find closest LO frequency row in each filtercal

@@ -19,9 +19,10 @@
 #define ChannelNumber 7
 
 // GPIO pin definitions from common header
-const int ADHAT1_DRYDPIN = ADHAT1_DRDY_PIN;
-const int ADHAT2_DRYDPIN = ADHAT2_DRDY_PIN;
-const int ADHAT3_DRYDPIN = ADHAT3_DRDY_PIN;
+// Note: Despite the name "DRYDPIN", these are CS pins used by the Waveshare library
+const int ADHAT1_DRYDPIN = ADHAT1_CS_PIN;
+const int ADHAT2_DRYDPIN = ADHAT2_CS_PIN;
+const int ADHAT3_DRYDPIN = ADHAT3_CS_PIN;
 
 const int GPIO_FREQ_INCREMENT = CALIB_GPIO_FREQ_INCREMENT;
 const int GPIO_FREQ_RESET = CALIB_GPIO_FREQ_RESET;

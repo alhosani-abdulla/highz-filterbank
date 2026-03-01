@@ -24,6 +24,14 @@ from .conversions import (
     voltage_to_dbm
 )
 
+from .log_detector import (
+    LogDetectorCalibration,
+    LOPowerLoader,
+    FilterDetectorCalibration,
+    load_lo_power,
+    get_lo_power_correction
+)
+
 __all__ = [
     'load_filtercal',
     'load_state_file',
@@ -34,5 +42,10 @@ __all__ = [
     'apply_calibration_to_spectrum',
     'calculate_filter_normalization',
     'adc_counts_to_voltage',
-    'voltage_to_dbm'
+    'voltage_to_dbm',
+    'LogDetectorCalibration',
+    'LOPowerLoader',
+    'FilterDetectorCalibration',
+    'load_lo_power',
+    'get_lo_power_correction'
 ]

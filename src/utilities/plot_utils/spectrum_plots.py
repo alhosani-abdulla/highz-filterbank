@@ -28,9 +28,9 @@ def get_filter_colors(n_filters=21):
     return colors
 
 
-def organize_data_by_filter(frequencies, values, filter_indices):
+def organize_data_by_filter(frequencies, values, filter_indices, downsample=3):
     """
-    Organize parallel arrays by filter number.
+    Organize parallel arrays by filter number with optional downsampling.
     
     Parameters
     ----------
@@ -40,6 +40,8 @@ def organize_data_by_filter(frequencies, values, filter_indices):
         Values (voltage, power, etc.)
     filter_indices : ndarray
         Filter numbers (0-20)
+    downsample : int
+        Keep every Nth point (default: 3 means keep 1/3 of points)
     
     Returns
     -------
@@ -49,7 +51,9 @@ def organize_data_by_filter(frequencies, values, filter_indices):
         - 'values': list of values
     """
     filter_data = {}
-    for freq, val, filt in zip(frequencies, values, filter_indices):
+    for i, (freq, val, filt) in enumerate(zip(frequencies, values, filter_indices)):
+        if downsample > 1 and i % downsample != 0:
+            continue  # Skip this point
         if filt not in filter_data:
             filter_data[filt] = {'freq': [], 'values': []}
         filter_data[filt]['freq'].append(freq)
@@ -58,7 +62,7 @@ def organize_data_by_filter(frequencies, values, filter_indices):
 
 
 def create_voltage_plot(frequencies, voltages, filter_indices, 
-                       excluded_filters=None, title_suffix=""):
+                       excluded_filters=None, title_suffix="", fast_mode=False):
     """
     Create voltage spectrum plot.
     
@@ -74,6 +78,8 @@ def create_voltage_plot(frequencies, voltages, filter_indices,
         Filter indices to exclude from plot
     title_suffix : str
         Additional text for title (e.g., timestamp)
+    fast_mode : bool
+        If True, disable hover for faster rendering (default: False)
     
     Returns
     -------
@@ -84,7 +90,8 @@ def create_voltage_plot(frequencies, voltages, filter_indices,
         excluded_filters = []
     
     colors = get_filter_colors()
-    filter_data = organize_data_by_filter(frequencies, voltages, filter_indices)
+    # No downsampling - user needs full resolution for overlapping spectra
+    filter_data = organize_data_by_filter(frequencies, voltages, filter_indices, downsample=1)
     
     fig = go.Figure()
     
@@ -92,17 +99,15 @@ def create_voltage_plot(frequencies, voltages, filter_indices,
         if filt_num in excluded_filters or filt_num not in filter_data:
             continue
         
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Scattergl(
             x=filter_data[filt_num]['freq'],
             y=filter_data[filt_num]['values'],
             mode='markers',
             marker=dict(size=3, color=colors[filt_num]),
             name=f'Filter {filt_num}',
             showlegend=False,
-            hovertemplate=f'<b>Filter {filt_num}</b><br>' +
-                          '<b>Freq</b>: %{x:.1f} MHz<br>' +
-                          '<b>Voltage</b>: %{y:.4f} V<br>' +
-                          '<extra></extra>'
+            hovertemplate=f'F{filt_num}: %{{y:.3f}}V @ %{{x:.0f}}MHz<extra></extra>' if not fast_mode else None,
+            hoverinfo='skip' if fast_mode else None
         ))
     
     title = f"Raw Detector Voltages{' - ' + title_suffix if title_suffix else ''}"
@@ -114,17 +119,17 @@ def create_voltage_plot(frequencies, voltages, filter_indices,
         xaxis_range=[0, 350],
         yaxis_range=[0.8, 2.2],
         template="plotly_white",
-        hovermode='closest',
+        hovermode=False if fast_mode else 'closest',
         showlegend=False,
         height=480,
-        margin=dict(b=60)
+        margin=dict(b=60, l=40, r=20, t=40)
     )
     
     return fig
 
 
 def create_power_plot(frequencies, powers, filter_indices,
-                     excluded_filters=None, title_suffix=""):
+                     excluded_filters=None, title_suffix="", fast_mode=False):
     """
     Create calibrated power spectrum plot.
     
@@ -140,6 +145,8 @@ def create_power_plot(frequencies, powers, filter_indices,
         Filter indices to exclude from plot
     title_suffix : str
         Additional text for title (e.g., timestamp)
+    fast_mode : bool
+        If True, disable hover for faster rendering (default: False)
     
     Returns
     -------
@@ -150,7 +157,8 @@ def create_power_plot(frequencies, powers, filter_indices,
         excluded_filters = []
     
     colors = get_filter_colors()
-    filter_data = organize_data_by_filter(frequencies, powers, filter_indices)
+    # No downsampling - user needs full resolution for overlapping spectra
+    filter_data = organize_data_by_filter(frequencies, powers, filter_indices, downsample=1)
     
     fig = go.Figure()
     
@@ -158,17 +166,15 @@ def create_power_plot(frequencies, powers, filter_indices,
         if filt_num in excluded_filters or filt_num not in filter_data:
             continue
         
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Scattergl(
             x=filter_data[filt_num]['freq'],
             y=filter_data[filt_num]['values'],
             mode='markers',
             marker=dict(size=3, color=colors[filt_num]),
             name=f'Filter {filt_num}',
             showlegend=False,
-            hovertemplate=f'<b>Filter {filt_num}</b><br>' +
-                          '<b>Freq</b>: %{x:.1f} MHz<br>' +
-                          '<b>Power</b>: %{y:.2f} dBm<br>' +
-                          '<extra></extra>'
+            hovertemplate=f'F{filt_num}: %{{y:.1f}}dBm @ %{{x:.0f}}MHz<extra></extra>' if not fast_mode else None,
+            hoverinfo='skip' if fast_mode else None
         ))
     
     title = f"Calibrated Power Spectrum{' - ' + title_suffix if title_suffix else ''}"
@@ -180,10 +186,10 @@ def create_power_plot(frequencies, powers, filter_indices,
         yaxis_range=[-80, 20],
         xaxis_range=[-50, 350],
         template="plotly_white",
-        hovermode='closest',
+        hovermode=False if fast_mode else 'closest',
         showlegend=False,
         height=480,
-        margin=dict(b=60)
+        margin=dict(b=60, l=40, r=20, t=40)
     )
     
     return fig

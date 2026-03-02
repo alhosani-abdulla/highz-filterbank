@@ -45,21 +45,25 @@ def create_filtercal_line_plots(filtercal_pos, filtercal_neg,
     lo_pos = filtercal_pos['lo_frequencies']
     lo_neg = filtercal_neg['lo_frequencies']
     
-    # Positive power plot
+    # Downsample by 3x for diagnostics (balance between speed and detail)
+    step = 3
+    volts_pos = volts_pos[::step, :]
+    volts_neg = volts_neg[::step, :]
+    lo_pos = lo_pos[::step]
+    lo_neg = lo_neg[::step]
+    
+    # Positive power plot - static for speed
     fig_pos = go.Figure()
-    for filt_idx in range(1, 22):
-        fig_pos.add_trace(go.Scatter(
+    for filt_num in range(1, 22):  # Filter numbers 1-21
+        filt_idx = filt_num - 1  # Array index 0-20
+        fig_pos.add_trace(go.Scattergl(
             x=lo_pos,
             y=volts_pos[:, filt_idx],
-            mode='lines+markers',
-            name=f'Filter {filt_idx}',
+            mode='lines',
+            name=f'Filter {filt_num}',
             showlegend=False,
-            line=dict(width=1.5),
-            marker=dict(size=4),
-            hovertemplate='<b>Filter ' + str(filt_idx) + '</b><br>' +
-                          'LO: %{x:.1f} MHz<br>' +
-                          'Voltage: %{y:.4f} V<br>' +
-                          '<extra></extra>'
+            line=dict(width=1),
+            hoverinfo='skip'  # Disable hover for speed
         ))
     
     title_pos = f"+5 dBm Calibration - Filter Responses (Voltage)"
@@ -75,27 +79,24 @@ def create_filtercal_line_plots(filtercal_pos, filtercal_neg,
         xaxis_range=[900, 960],
         yaxis_range=[0.8, 2.2],
         template="plotly_white",
-        hovermode='closest',
+        hovermode=False,
         showlegend=False,
         height=480,
-        margin=dict(b=60)
+        margin=dict(b=60, l=40, r=20, t=40)
     )
     
-    # Negative power plot
+    # Negative power plot - static for speed
     fig_neg = go.Figure()
-    for filt_idx in range(1, 22):
-        fig_neg.add_trace(go.Scatter(
+    for filt_num in range(1, 22):  # Filter numbers 1-21
+        filt_idx = filt_num - 1  # Array index 0-20
+        fig_neg.add_trace(go.Scattergl(
             x=lo_neg,
             y=volts_neg[:, filt_idx],
-            mode='lines+markers',
-            name=f'Filter {filt_idx}',
+            mode='lines',
+            name=f'Filter {filt_num}',
             showlegend=False,
-            line=dict(width=1.5),
-            marker=dict(size=4),
-            hovertemplate='<b>Filter ' + str(filt_idx) + '</b><br>' +
-                          'LO: %{x:.1f} MHz<br>' +
-                          'Voltage: %{y:.4f} V<br>' +
-                          '<extra></extra>'
+            line=dict(width=1),
+            hoverinfo='skip'  # Disable hover for speed
         ))
     
     title_neg = f"-4 dBm Calibration - Filter Responses (Voltage)"
@@ -111,10 +112,10 @@ def create_filtercal_line_plots(filtercal_pos, filtercal_neg,
         xaxis_range=[900, 960],
         yaxis_range=[0.8, 2.2],
         template="plotly_white",
-        hovermode='closest',
+        hovermode=False,
         showlegend=False,
         height=480,
-        margin=dict(b=60)
+        margin=dict(b=60, l=40, r=20, t=40)
     )
     
     return fig_pos, fig_neg

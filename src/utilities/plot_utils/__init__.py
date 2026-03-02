@@ -15,10 +15,19 @@ from .calibration_plots import (
     create_filtercal_heatmaps
 )
 
+from .static_plots import (
+    create_voltage_plot_static,
+    create_power_plot_static,
+    create_filtercal_plot_static
+)
+
 __all__ = [
     'create_voltage_plot',
     'create_power_plot',
     'organize_data_by_filter',
     'create_filtercal_line_plots',
-    'create_filtercal_heatmaps'
+    'create_filtercal_heatmaps',
+    'create_voltage_plot_static',
+    'create_power_plot_static',
+    'create_filtercal_plot_static'
 ]

@@ -15,6 +15,7 @@ from .fits_loader import (
 from .calibration import (
     load_s21_corrections,
     build_filter_calibration,
+    build_filter_detector_calibration,
     apply_calibration_to_spectrum,
     calculate_filter_normalization
 )
@@ -39,6 +40,7 @@ __all__ = [
     'find_closest_lo_row',
     'load_s21_corrections',
     'build_filter_calibration',
+    'build_filter_detector_calibration',
     'apply_calibration_to_spectrum',
     'calculate_filter_normalization',
     'adc_counts_to_voltage',

@@ -20,8 +20,7 @@ from utilities.io_utils import (
     LOPowerLoader,
     FilterDetectorCalibration,
     get_filter_centers,
-    adc_counts_to_voltage,
-    load_s21_corrections
+    adc_counts_to_voltage
 )
 
 
@@ -38,7 +37,10 @@ def plot_filter_responses(cycle_dir, power_setting='-4dBm', apply_s21=False,
     power_setting : str
         Which calibration to use: '+5dBm' or '-4dBm'
     apply_s21 : bool
-        Whether to apply S21 path corrections
+        Whether to apply S21 path corrections during detector calibration.
+        If True, detector is calibrated against actual detector input power
+        (after cables/splitters/filters). If False, calibrated against LO
+        output power. Default: False.
     s21_dir : str or Path, optional
         Directory containing filter S21 .s2p files
     normalize_lo_power : bool
@@ -102,8 +104,13 @@ def plot_filter_responses(cycle_dir, power_setting='-4dBm', apply_s21=False,
     print("Using two-point linear calibration from filtercal files")
     print("Each filter detector has slightly different transfer function")
     
+    # Set S21 directory if needed
+    if apply_s21 and s21_dir is None:
+        s21_dir = Path(__file__).parent.parent / "characterization" / "s_parameters" / "filter_s21_20260226"
+    
     # Load filter detector calibration (uses both +5dBm and -4dBm files for 2-point linear fit)
-    filter_calib = FilterDetectorCalibration(cycle_dir)
+    # If apply_s21=True, S21 corrections are applied during calibration (not after)
+    filter_calib = FilterDetectorCalibration(cycle_dir, apply_s21=apply_s21, s21_dir=s21_dir)
     filter_calib.info()
     print(f"  ADC reference voltage: {filter_calib.ref_voltage:.3f} V")
     
@@ -111,49 +118,42 @@ def plot_filter_responses(cycle_dir, power_setting='-4dBm', apply_s21=False,
     filter_voltages = adc_counts_to_voltage(filter_adc, ref=filter_calib.ref_voltage, mode='c_like')
     
     # Convert to power using per-filter linear calibration
-    filter_power_dbm = filter_calib.voltage_to_power(filter_voltages)
+    # If apply_s21=True, this already accounts for S21 (applied during calibration)
+    # Don't clip yet if we're going to normalize (clip after normalization)
+    clip_now = not normalize_lo_power
+    filter_power_dbm = filter_calib.voltage_to_power(filter_voltages, clip_to_noise_floor=clip_now)
     
     # Optionally apply LO power correction
     if normalize_lo_power:
         print("Applying LO power normalization...")
         lo_power_at_freq = lo_power_loader.get_power_at_frequency(lo_freqs)  # dBm at each LO freq
         
-        # For each frequency point, normalize by LO power
-        # Filter response (S21-like) = Filter Output Power - LO Input Power
+        # Extract nominal power from setting name
+        if power_setting == '+5dBm':
+            nominal_power = 5.0
+        elif power_setting == '-4dBm':
+            nominal_power = -4.0
+        else:
+            nominal_power = 0.0  # fallback
+        
+        # For each frequency point, normalize by LO power and add nominal offset
+        # This shows: "detector power if LO was flat at nominal setting level"
+        # Response = P_detector - LO_actual + nominal
         filter_response = np.zeros_like(filter_power_dbm)
         for i in range(n_freq):
-            filter_response[i, :] = filter_power_dbm[i, :] - lo_power_at_freq[i]
+            filter_response[i, :] = filter_power_dbm[i, :] - lo_power_at_freq[i] + nominal_power
+        
+        # Apply clipping after normalization to get flat noise floor
+        # Normalized noise floor = detector_floor - mean(LO_actual) + nominal
+        mean_lo = np.mean(lo_power_at_freq)
+        normalized_floor = filter_calib.detector_noise_floor_dbm - mean_lo + nominal_power
+        filter_response = np.maximum(filter_response, normalized_floor)
+        
+        print(f"Normalized to LO power flat at {nominal_power:+.1f} dBm")
+        print(f"Normalized noise floor: {normalized_floor:.1f} dBm")
     else:
         # Use raw filter output power (no LO normalization)
         filter_response = filter_power_dbm.copy()
-    
-    # Optionally apply S21 path corrections
-    s21_data = None
-    if apply_s21:
-        if s21_dir is None:
-            s21_dir = Path(__file__).parent.parent / "characterization" / "s_parameters" / "filter_s21_20260226"
-        
-        print(f"\nLoading S21 corrections from: {s21_dir}")
-        s21_data = load_s21_corrections(s21_dir)
-        
-        if s21_data is not None:
-            print(f"Loaded S21 for {len(s21_data)} filters")
-            print("Applying S21 path corrections (accounting for system loss)...")
-            # Apply S21 corrections
-            for filt_num in range(n_filters):
-                if (filt_num + 1) in s21_data:
-                    s21_freqs = s21_data[filt_num + 1]['freqs']
-                    s21_db = s21_data[filt_num + 1]['s21_db']
-                    
-                    # Interpolate S21 to match LO frequencies
-                    s21_interp = np.interp(lo_freqs, s21_freqs, s21_db)
-                    
-                    # Add S21 to get actual power at detector (S21 is negative for loss)
-                    # Detector power = LO equivalent power + S21_dB
-                    filter_response[:, filt_num] += s21_interp
-        else:
-            print("Warning: S21 corrections not available")
-            apply_s21 = False
     
     # Get filter center frequencies
     filter_centers = get_filter_centers(num_filters=21, start_mhz=904.0, step_mhz=2.6)
@@ -196,7 +196,7 @@ def plot_filter_responses(cycle_dir, power_setting='-4dBm', apply_s21=False,
     # Set y-axis label based on normalization and S21 correction
     if normalize_lo_power:
         ylabel_str = 'Filter Response (dB relative to LO)'
-    elif apply_s21 and s21_data is not None:
+    elif filter_calib.apply_s21:
         ylabel_str = 'Detector Input Power (dBm, S21-corrected)'
     else:
         ylabel_str = 'LO-Equivalent Power (dBm)'

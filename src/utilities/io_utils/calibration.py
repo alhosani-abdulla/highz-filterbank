@@ -8,6 +8,7 @@ import numpy as np
 from pathlib import Path
 from .fits_loader import get_filter_centers, find_closest_lo_row
 from .conversions import adc_counts_to_voltage
+from .log_detector import FilterDetectorCalibration
 
 
 def load_s21_corrections(s21_dir):
@@ -165,6 +166,43 @@ def build_filter_calibration(filtercal_pos, filtercal_neg,
     return filter_calibrations
 
 
+def build_filter_detector_calibration(cycle_dir, apply_s21=False, s21_dir=None, 
+                                       detector_noise_floor_dbm=-65.0, 
+                                       lo_calibration=None):
+    """
+    Build per-filter calibration using FilterDetectorCalibration class.
+    
+    This is the recommended approach for calibration as it uses the actual LO power
+    measurements that vary with frequency from the log detector, rather than assuming
+    constant power levels.
+    
+    Parameters
+    ----------
+    cycle_dir : str or Path
+        Path to cycle directory containing filtercal_+5dBm.fits and filtercal_-4dBm.fits
+    apply_s21 : bool, optional
+        If True, apply S21 path corrections (default: False)
+    s21_dir : str or Path, optional
+        Directory containing S21 .s2p files. If None and apply_s21=True, uses default.
+    detector_noise_floor_dbm : float, optional
+        Minimum detectable power, clips values below this (default: -65.0 dBm)
+    lo_calibration : LogDetectorCalibration, optional
+        LO detector calibration object. If None, uses default from log_detector.py
+    
+    Returns
+    -------
+    FilterDetectorCalibration
+        Calibration object with voltage_to_power() method
+    """
+    return FilterDetectorCalibration(
+        cycle_dir=cycle_dir,
+        lo_calibration=lo_calibration,
+        detector_noise_floor_dbm=detector_noise_floor_dbm,
+        apply_s21=apply_s21,
+        s21_dir=s21_dir
+    )
+
+
 def apply_calibration_to_spectrum(data_2d, lo_frequencies, filter_calibrations,
                                   ref_voltage=3.27, return_voltages=False):
     """
@@ -176,8 +214,9 @@ def apply_calibration_to_spectrum(data_2d, lo_frequencies, filter_calibrations,
         ADC counts data
     lo_frequencies : ndarray (n_freq,)
         LO frequencies for each row (MHz)
-    filter_calibrations : dict
-        Per-filter calibration from build_filter_calibration()
+    filter_calibrations : dict or FilterDetectorCalibration
+        Per-filter calibration from build_filter_calibration() (dict) or
+        build_filter_detector_calibration() (FilterDetectorCalibration object)
     ref_voltage : float
         Reference voltage for ADC conversion (default: 3.27 V for measurements)
     return_voltages : bool
@@ -198,7 +237,13 @@ def apply_calibration_to_spectrum(data_2d, lo_frequencies, filter_calibrations,
     n_freq, n_channels = data_2d.shape
     
     # Convert all data to voltage
-    volts_2d = adc_counts_to_voltage(data_2d, ref=ref_voltage)
+    # Check if FilterDetectorCalibration object to use its ref_voltage
+    if isinstance(filter_calibrations, FilterDetectorCalibration):
+        volts_2d = adc_counts_to_voltage(data_2d, ref=filter_calibrations.ref_voltage, mode='c_like')
+        use_detector_cal = True
+    else:
+        volts_2d = adc_counts_to_voltage(data_2d, ref=ref_voltage)
+        use_detector_cal = False
     
     # Initialize output arrays
     all_frequencies = []
@@ -215,8 +260,12 @@ def apply_calibration_to_spectrum(data_2d, lo_frequencies, filter_calibrations,
             
             voltage = volts_2d[freq_idx, filt_num]
             
-            # Apply calibration if available
-            if filt_num in filter_calibrations:
+            # Apply calibration
+            if use_detector_cal:
+                # Use FilterDetectorCalibration object (1-indexed filter numbers)
+                power = filter_calibrations.voltage_to_power(voltage, filter_nums=filt_num + 1)
+            elif filt_num in filter_calibrations:
+                # Use dict-based calibration (0-indexed)
                 slope = filter_calibrations[filt_num]['slope']
                 intercept = filter_calibrations[filt_num]['intercept']
                 power = slope * voltage + intercept

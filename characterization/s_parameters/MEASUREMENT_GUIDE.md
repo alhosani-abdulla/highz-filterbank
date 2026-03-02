@@ -68,7 +68,7 @@ Low Pass Filter (<1 GHz) ....................... -1 to -2 dB
   ↓
 Cavity Bandpass Filter ......................... -1 dB (in-band)
   ↓
-Detector Input (LT5534)
+Detector Input (AD8318)
 ```
 
 **Architecture:** All 21 filters are fed through both the 8-way splitter and then a 4-way splitter. The system uses 6 four-way splitters (connected to outputs of the 8-way splitter) to distribute the signal to all 21 filters. Unused splitter outputs (3 ports from the 4-way splitters, 2 ports from the 8-way) are terminated with 50 Ω loads to maintain proper impedance matching.

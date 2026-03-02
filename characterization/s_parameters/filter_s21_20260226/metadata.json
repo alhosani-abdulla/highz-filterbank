@@ -31,7 +31,7 @@
     "filter_type": "Custom cavity bandpass filters",
     "filter_bandwidth_MHz": 0.2,
     "filter_centers": "904.0 to 956.0 MHz (2.6 MHz steps, 21 filters)",
-    "detector_model": "Analog Devices LT5534 log detector"
+    "detector_model": "Analog Devices AD8318 log detector"
   },
   "measurements": {
     "filters_measured": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],

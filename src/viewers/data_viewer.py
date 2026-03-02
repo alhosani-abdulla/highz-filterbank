@@ -343,25 +343,26 @@ def load_data(n_clicks, selected_date, selected_cycle, selected_state,
         filtercal_data = None
         
         if filtercal_files['pos'] and filtercal_files['neg']:
-            filtercal_pos = io_utils.load_filtercal(filtercal_files['pos'])
-            filtercal_neg = io_utils.load_filtercal(filtercal_files['neg'])
-            
-            # Load S21 corrections if enabled
-            s21_data = None
-            if 's21' in calib_toggles:
-                s21_data = io_utils.load_s21_corrections(s21_dir)
-            
-            # Build calibration
-            filter_cal = io_utils.build_filter_calibration(
-                filtercal_pos, filtercal_neg,
-                s21_data=s21_data
-            )
-            
-            filtercal_data = {
-                'pos': filtercal_pos,
-                'neg': filtercal_neg,
-                'calibration': filter_cal
-            }
+            try:
+                # Use the new FilterDetectorCalibration which properly accounts for
+                # LO power variation with frequency
+                apply_s21 = 's21' in calib_toggles
+                filter_cal = io_utils.build_filter_detector_calibration(
+                    cycle_dir=cycle_dir,
+                    apply_s21=apply_s21,
+                    s21_dir=s21_dir if apply_s21 else None
+                )
+                
+                filtercal_data = {
+                    'pos_file': filtercal_files['pos'],
+                    'neg_file': filtercal_files['neg'],
+                    'has_calibration': True,
+                    'calibration': filter_cal
+                }
+            except Exception as e:
+                print(f"Error loading calibration: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Slider configuration
         slider_style = {'padding': '10px', 'backgroundColor': '#ecf0f1', 
@@ -390,7 +391,8 @@ def load_data(n_clicks, selected_date, selected_cycle, selected_state,
         filtercal_storage = {
             'pos_file': filtercal_files['pos'],
             'neg_file': filtercal_files['neg'],
-            'has_calibration': filtercal_data is not None
+            'has_calibration': filtercal_data is not None,
+            'calibration': filtercal_data['calibration'] if filtercal_data else None
         } if filtercal_files['pos'] and filtercal_files['neg'] else None
         
         return spectrum_storage, filtercal_storage, slider_style, n_spectra - 1, marks, status
@@ -470,21 +472,13 @@ def create_plots(spectrum_storage, filtercal_storage, view_mode, filtercal_mode,
     
     if filtercal_storage and filtercal_storage['has_calibration']:
         try:
-            filtercal_pos = io_utils.load_filtercal(filtercal_storage['pos_file'])
-            filtercal_neg = io_utils.load_filtercal(filtercal_storage['neg_file'])
+            # Use FilterDetectorCalibration directly from storage
+            filter_cal = filtercal_storage['calibration']
             
-            # Load S21 corrections if enabled
-            s21_data = None
-            if 's21' in calib_toggles:
-                from pathlib import Path
-                s21_dir = Path(__file__).parent.parent.parent / "characterization" / "s_parameters"
-                s21_data = io_utils.load_s21_corrections(str(s21_dir))
-            
-            # Build calibration
-            filter_cal = io_utils.build_filter_calibration(
-                filtercal_pos, filtercal_neg,
-                s21_data=s21_data
-            )
+            # Load raw filtercal data for diagnostic plots (if in grid mode)
+            if view_mode == 'grid' and 'pos_file' in filtercal_storage and 'neg_file' in filtercal_storage:
+                filtercal_pos = io_utils.load_filtercal(filtercal_storage['pos_file'])
+                filtercal_neg = io_utils.load_filtercal(filtercal_storage['neg_file'])
         except Exception as e:
             print(f"Error loading calibration: {e}")
     

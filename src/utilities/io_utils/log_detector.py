@@ -353,6 +353,17 @@ class FilterDetectorCalibration:
         filtercal_-4dBm.fits files
     lo_calibration : LogDetectorCalibration, optional
         LO detector calibration object. If None, creates default.
+    detector_noise_floor_dbm : float, optional
+        Minimum power the AD8318 detector can measure. Values below this
+        are clipped (default: -65 dBm).
+    apply_s21 : bool, optional
+        If True, apply S21 path corrections to LO powers during calibration.
+        This calibrates the detector against actual detector input power
+        (after cables/splitters/filters) instead of LO output power.
+        Default: False.
+    s21_dir : str or Path, optional
+        Directory containing filter S21 .s2p files. If None and apply_s21=True,
+        uses default location in characterization/s_parameters/.
     
     Attributes
     ----------
@@ -360,6 +371,10 @@ class FilterDetectorCalibration:
         Number of filters (typically 21)
     ref_voltage : float
         ADC reference voltage in volts (read from FITS file)
+    detector_noise_floor_dbm : float
+        Minimum detectable power (clips extrapolation below this)
+    apply_s21 : bool
+        Whether S21 corrections were applied during calibration
     slopes : ndarray
         Linear calibration slopes (dBm/V) for each filter, shape (n_filters,)
     intercepts : ndarray
@@ -367,22 +382,34 @@ class FilterDetectorCalibration:
     frequencies : ndarray
         LO frequencies in MHz
     powers_low : ndarray
-        Mean power at each filter for -4dBm setting, shape (n_filters,)
+        Reference power at each filter for -4dBm setting, shape (n_filters,)
+        (LO output power if apply_s21=False, detector input power if apply_s21=True)
     powers_high : ndarray
-        Mean power at each filter for +5dBm setting, shape (n_filters,)
+        Reference power at each filter for +5dBm setting, shape (n_filters,)
+        (LO output power if apply_s21=False, detector input power if apply_s21=True)
     voltages_low : ndarray
         Mean voltage at each filter for -4dBm setting, shape (n_filters,)
     voltages_high : ndarray
         Mean voltage at each filter for +5dBm setting, shape (n_filters,)
     """
     
-    def __init__(self, cycle_dir, lo_calibration=None):
+    def __init__(self, cycle_dir, lo_calibration=None, detector_noise_floor_dbm=-65.0,
+                 apply_s21=False, s21_dir=None):
         self.cycle_dir = Path(cycle_dir)
+        self.detector_noise_floor_dbm = detector_noise_floor_dbm
+        self.apply_s21 = apply_s21
         
         if lo_calibration is None:
             self.lo_calibration = LogDetectorCalibration()
         else:
             self.lo_calibration = lo_calibration
+        
+        # Set S21 directory
+        if s21_dir is None and apply_s21:
+            # Use default location (go up from src/utilities/io_utils/ to repo root)
+            self.s21_dir = Path(__file__).parent.parent.parent.parent / "characterization" / "s_parameters" / "filter_s21_20260226"
+        else:
+            self.s21_dir = Path(s21_dir) if s21_dir is not None else None
         
         self._load_and_calibrate()
     
@@ -426,6 +453,24 @@ class FilterDetectorCalibration:
         # Get filter center frequencies (904.0, 906.6, 909.2, ... 956.0 MHz)
         filter_centers = 904.0 + np.arange(n_filters) * 2.6  # MHz
         
+        # Load S21 corrections if requested
+        s21_data = None
+        if self.apply_s21:
+            if self.s21_dir.exists():
+                try:
+                    # Import locally to avoid circular dependency
+                    from .calibration import load_s21_corrections
+                    s21_data = load_s21_corrections(self.s21_dir)
+                    print(f"Loaded S21 corrections for {len(s21_data)} filters from {self.s21_dir.name}")
+                except Exception as e:
+                    print(f"Warning: Could not load S21 corrections: {e}")
+                    print("Continuing with LO output power (no S21 correction)")
+                    self.apply_s21 = False
+            else:
+                print(f"Warning: S21 directory not found: {self.s21_dir}")
+                print("Continuing with LO output power (no S21 correction)")
+                self.apply_s21 = False
+        
         # For each filter, find the frequency index closest to its center
         # and extract voltage and power at that frequency
         self.voltages_low = np.zeros(n_filters)
@@ -443,9 +488,25 @@ class FilterDetectorCalibration:
             self.voltages_low[filt_num] = filter_voltages_low[freq_idx, filt_num]
             self.voltages_high[filt_num] = filter_voltages_high[freq_idx, filt_num]
             
-            # Extract LO power at that frequency (this is the input power to the filter)
-            self.powers_low[filt_num] = lo_loader_low.powers[freq_idx]
-            self.powers_high[filt_num] = lo_loader_high.powers[freq_idx]
+            # Extract LO output power at that frequency
+            lo_power_low = lo_loader_low.powers[freq_idx]
+            lo_power_high = lo_loader_high.powers[freq_idx]
+            
+            # Apply S21 correction if available (converts LO output power to detector input power)
+            if self.apply_s21 and s21_data is not None and (filt_num + 1) in s21_data:
+                s21_freqs = s21_data[filt_num + 1]['freqs']
+                s21_db = s21_data[filt_num + 1]['s21_db']
+                
+                # Interpolate S21 at center frequency
+                s21_at_center = np.interp(center_freq, s21_freqs, s21_db)
+                
+                # Apply S21: P_detector_input = P_LO_output + S21_dB (S21 is negative for loss)
+                self.powers_low[filt_num] = lo_power_low + s21_at_center
+                self.powers_high[filt_num] = lo_power_high + s21_at_center
+            else:
+                # Use LO output power directly (no S21 correction)
+                self.powers_low[filt_num] = lo_power_low
+                self.powers_high[filt_num] = lo_power_high
         
         # Compute linear fit for each filter: P = slope * V + intercept
         # Two points: (V_low, P_low) and (V_high, P_high) at filter's center frequency
@@ -461,7 +522,7 @@ class FilterDetectorCalibration:
             print(f"Warning: Small voltage differences for filters: {warnings_idx + 1}")
             print("Linear calibration may be inaccurate for these filters.")
     
-    def voltage_to_power(self, voltages, filter_nums=None):
+    def voltage_to_power(self, voltages, filter_nums=None, clip_to_noise_floor=True):
         """
         Convert filter detector voltages to power using linear calibration.
         
@@ -476,6 +537,11 @@ class FilterDetectorCalibration:
             Filter number(s) (1-indexed, e.g., 1-21). Required if voltages is scalar or 
             if you want to convert specific filter(s). If None, assumes voltages has 
             shape that matches all filters.
+        clip_to_noise_floor : bool, optional
+            If True, clip extrapolated powers below the detector noise floor to avoid
+            reporting physically impossible values (default: True). The AD8318 cannot
+            measure below ~-60 to -65 dBm; linear extrapolation from out-of-band
+            voltages can give nonsense values like -120 dBm.
         
         Returns
         -------
@@ -515,9 +581,13 @@ class FilterDetectorCalibration:
             else:
                 raise ValueError(f"Voltages array has unexpected shape: {voltages.shape}")
         
+        # Clip to detector noise floor to avoid nonsense extrapolation
+        if clip_to_noise_floor:
+            powers = np.maximum(powers, self.detector_noise_floor_dbm)
+        
         # Return scalar if input was scalar
         if powers.size == 1:
-            return float(powers)
+            return float(powers.item())
         return powers
     
     def info(self):
@@ -526,10 +596,15 @@ class FilterDetectorCalibration:
         print(f"  Cycle: {self.cycle_dir.name}")
         print(f"  Number of filters: {self.n_filters}")
         print(f"  Calibration method: Two-point at each filter's center frequency")
+        if self.apply_s21:
+            print(f"  Calibration reference: Detector input power (with S21 corrections)")
+        else:
+            print(f"  Calibration reference: LO output power (no S21 corrections)")
         print(f"  Power range: {np.min(self.powers_low):.2f} to {np.max(self.powers_high):.2f} dBm")
         print(f"  Voltage range: {np.min(self.voltages_high):.3f} to {np.max(self.voltages_low):.3f} V")
         print(f"  Slope range: {np.min(self.slopes):.2f} to {np.max(self.slopes):.2f} dBm/V")
         print(f"  Slope mean: {np.mean(self.slopes):.2f} dBm/V, std: {np.std(self.slopes):.2f} dBm/V")
+        print(f"  Detector noise floor: {self.detector_noise_floor_dbm:.1f} dBm (clips extrapolation)")
 
 
 # Convenience functions

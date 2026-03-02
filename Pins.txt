@@ -12,7 +12,7 @@ ADHAT Reset: 18
 ADHAT1_DRDY: 12
 ADHAT2_DRDY: 22
 ADHAT3_DRDY: 23
-State_CTRL_Bit0: 21
+State_CTRL_Bit0: 20
 State_CTRL_Bit1: 24
 State_CTRL_BIT2: 27
 
@@ -26,5 +26,6 @@ CE1 (Chip Enable 1): GPIO 7 (Physical Pin 26)
 Available Pins (but might have issues):
 GPIO 17:
 GPIO 25:
-GPIO 20:
+GPIO 21: Doesn't seem to work. Pulls back down after setting it high.
 GPIO 16:
+

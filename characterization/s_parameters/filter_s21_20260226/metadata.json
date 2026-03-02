@@ -1,0 +1,66 @@
+{
+  "measurement_date": "2026-02-26",
+  "measured_by": "Abdulla Alhosani",
+  "equipment": {
+    "vna": "Keysight E5071C ENA Series Network Analyzer",
+    "vna_firmware": "Unknown",
+    "cables": "Semi-Rigid >1m SMA cables",
+    "calibration_kit": "SMA OSL (short-open-load)",
+    "calibration_date": "2026-02-26"
+  },
+  "conditions": {
+    "temperature_C": 22,
+    "humidity_percent": null,
+    "location": "Lab",
+    "notes": "Measured without the 10 dB attenuator after the LO. This raises the power level at detector inputs to where it has a linear response."
+  },
+  "measurement_parameters": {
+    "start_freq_MHz": 900,
+    "stop_freq_MHz": 960,
+    "num_points": 1601,
+    "if_bandwidth_Hz": 70000,
+    "averaging": 16,
+    "smoothing_aperture_percent": 1.5,
+    "output_power_dBm": -20,
+    "format": "Touchstone S2P"
+  },
+  "system_configuration": {
+    "measurement_path": "LO output to detector input (after filter)",
+    "splitter_8way": "QM-PD8-ST 5-1000M RF Power Divider VHF UHF 1-To-8 Power Splitter",
+    "splitter_4way": "Unknown",
+    "filter_type": "Custom cavity bandpass filters",
+    "filter_bandwidth_MHz": 0.2,
+    "filter_centers": "904.0 to 956.0 MHz (2.6 MHz steps, 21 filters)",
+    "detector_model": "Analog Devices AD8318 log detector"
+  },
+  "measurements": {
+    "filters_measured": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+    "total_filters": 21,
+    "measurement_order": "Sequential 1-21",
+    "filenames": "filter_01.s2p through filter_21.s2p",
+    "notes": "Measured end-to-end S21 from LO output to detector input (after passing through filter). These measurements capture cable loss, splitter loss, and filter insertion loss for the complete RF path."
+  },
+  "quality_checks": {
+    "all_files_present": true,
+    "file_sizes_consistent": true,
+    "filter_passbands_visible": true,
+    "smooth_frequency_response": true,
+    "no_cable_resonances": "Likely no resonances - smooth passband shape is acceptable",
+    "dashboard_loads_successfully": "Not yet tested",
+    "notes": "Filter passbands look excellent with minimal peak-to-peak variations (~13-14.5 dB insertion loss). All filters show smooth frequency response around center frequencies."
+  },
+  "notes": [
+    "Measurements performed without the 10dB attenuator that was previously in the RF path",
+    "Files stored in characterization/s_parameters/filter_s21_20260226/",
+    "Filter numbering convention: 1-21 (Filter 1 = 904.0 MHz, Filter 21 = 956.0 MHz)",
+    "Each file is approximately 201KB in standard Touchstone format",
+    "VNA settings: -20 dBm output, 70 kHz IF bandwidth, 16x averaging, 1.5% smoothing aperture"
+  ],
+  "future_work": [
+    "S21 values confirmed to match expected cable/splitter/filter losses",
+    "Periodic validation measurements to track filter degradation over time",
+    "Compare with previous measurements if available",
+    "Integrate with log detector calibration for absolute power measurements",
+    "Test S-parameter loading in dashboard viewers"
+  ]
+}

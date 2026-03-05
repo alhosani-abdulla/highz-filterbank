@@ -372,7 +372,10 @@ int STORE_FREQUENCY(FITS_DATA *input_struct, int index) {
     if (!input_struct) return -1;
     if (index < 0 || index >= TOTAL_STEPS) return -1;
     
-    input_struct->frequencies[index] = LO_FREQ;
+    // Store the frequency that was just measured
+    // After INCREMENT_LO_FREQUENCY, LO_FREQ points to the NEXT frequency,
+    // but we just measured at the PREVIOUS frequency
+    input_struct->frequencies[index] = LO_FREQ - FREQ_STEP;
     return 0;
 }
 
@@ -384,10 +387,14 @@ int INCREMENT_LO_FREQUENCY(void) {
     start_time = clock();
     
     if (LO_FREQ < FREQ_MAX){
+        // Send pulse to Arduino (programs on rising edge)
         gpioWrite(GPIO_FREQ_INCREMENT, 0);
         gpioDelay(PULSE_LOW_US);
         gpioWrite(GPIO_FREQ_INCREMENT, 1);
         gpioDelay(LO_SETTLE_US);
+        
+        // Arduino just programmed LO to curFreq and advanced curFreq
+        // Now increment RPi counter to match
         LO_FREQ = LO_FREQ + FREQ_STEP;
     }
     else {
@@ -414,6 +421,11 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     if (i < 0 || i >= input_struct->nrows) return -1;
     if (!input_struct->data) return -1;
     
+    // CRITICAL FIX: Increment LO BEFORE collecting data
+    // With the updated Arduino code, the rising edge programs the frequency,
+    // so after INCREMENT_LO_FREQUENCY completes, the hardware is at the correct frequency.
+    INCREMENT_LO_FREQUENCY();
+    
     if (ENABLE_VERBOSE_MEASUREMENT) {
         printf("##########################################\n");
         printf("MEASURING AT LO FREQ: %lf MHz\n", LO_FREQ);
@@ -429,8 +441,6 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
         fprintf(stderr, "Error: Failed to store frequency\n");
         return -1;
     }
-    
-    INCREMENT_LO_FREQUENCY();
     
     return 0;
 }
@@ -861,10 +871,13 @@ int main(int argc, char **argv) {
     gpioWrite(GPIO_LO_POWER, 1);
     gpioDelay(LO_SETTLE_US);
     
+    // Reset to FREQ_MIN
     gpioWrite(GPIO_FREQ_RESET, 0);
     gpioDelay(PULSE_LOW_US);
     gpioWrite(GPIO_FREQ_RESET, 1);
     gpioDelay(LO_SETTLE_US);
+    // Arduino curFreq is now 650 MHz, but LO hardware not programmed yet
+    // First GET_DATA call will program it
 
     sleep(1);
 

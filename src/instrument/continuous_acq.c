@@ -428,7 +428,8 @@ int GET_DATA(FITS_DATA *input_struct, int i) {
     
     if (ENABLE_VERBOSE_MEASUREMENT) {
         printf("##########################################\n");
-        printf("MEASURING AT LO FREQ: %lf MHz\n", LO_FREQ);
+        printf("MEASURING AT LO FREQ: %lf MHz (will store: %lf MHz)\n", 
+               LO_FREQ - FREQ_STEP, LO_FREQ - FREQ_STEP);
         printf("##########################################\n");
     }
 

@@ -54,7 +54,7 @@ def create_filtercal_line_plots(filtercal_pos, filtercal_neg,
     
     # Positive power plot - static for speed
     fig_pos = go.Figure()
-    for filt_num in range(1, 22):  # Filter numbers 1-21
+    for filt_num in range(1, 22):  # Display as 1-21 but data is indexed 0-20
         filt_idx = filt_num - 1  # Array index 0-20
         fig_pos.add_trace(go.Scattergl(
             x=lo_pos,
@@ -87,7 +87,7 @@ def create_filtercal_line_plots(filtercal_pos, filtercal_neg,
     
     # Negative power plot - static for speed
     fig_neg = go.Figure()
-    for filt_num in range(1, 22):  # Filter numbers 1-21
+    for filt_num in range(1, 22):  # Display as 1-21 but data is indexed 0-20
         filt_idx = filt_num - 1  # Array index 0-20
         fig_neg.add_trace(go.Scattergl(
             x=lo_neg,
@@ -162,7 +162,7 @@ def create_filtercal_heatmaps(filtercal_pos, filtercal_neg,
     fig_pos = go.Figure(data=go.Heatmap(
         z=volts_pos_T,
         x=lo_pos,
-        y=list(range(1, 22)),
+        y=list(range(1, 22)),  # Label as 1-21 for calibration display
         colorscale='Viridis',
         colorbar=dict(title="Voltage (V)"),
         hovertemplate='Filter: %{y}<br>' +
@@ -195,7 +195,7 @@ def create_filtercal_heatmaps(filtercal_pos, filtercal_neg,
     fig_neg = go.Figure(data=go.Heatmap(
         z=volts_neg_T,
         x=lo_neg,
-        y=list(range(1, 22)),
+        y=list(range(1, 22)),  # Label as 1-21 for calibration display
         colorscale='Viridis',
         colorbar=dict(title="Voltage (V)"),
         hovertemplate='Filter: %{y}<br>' +

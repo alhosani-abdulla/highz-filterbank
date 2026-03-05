@@ -95,18 +95,19 @@ def create_voltage_plot(frequencies, voltages, filter_indices,
     
     fig = go.Figure()
     
-    for filt_num in range(1, 22):
+    for filt_num in range(21):  # Filters are 0-indexed internally
         if filt_num in excluded_filters or filt_num not in filter_data:
             continue
         
+        display_num = filt_num + 1  # Display as 1-21
         fig.add_trace(go.Scattergl(
             x=filter_data[filt_num]['freq'],
             y=filter_data[filt_num]['values'],
             mode='markers',
             marker=dict(size=3, color=colors[filt_num]),
-            name=f'Filter {filt_num}',
+            name=f'Filter {display_num}',
             showlegend=False,
-            hovertemplate=f'F{filt_num}: %{{y:.3f}}V @ %{{x:.0f}}MHz<extra></extra>' if not fast_mode else None,
+            hovertemplate=f'F{display_num}: %{{y:.3f}}V @ %{{x:.0f}}MHz<extra></extra>' if not fast_mode else None,
             hoverinfo='skip' if fast_mode else None
         ))
     
@@ -162,18 +163,19 @@ def create_power_plot(frequencies, powers, filter_indices,
     
     fig = go.Figure()
     
-    for filt_num in range(1, 22):
+    for filt_num in range(21):  # Filters are 0-indexed internally
         if filt_num in excluded_filters or filt_num not in filter_data:
             continue
         
+        display_num = filt_num + 1  # Display as 1-21
         fig.add_trace(go.Scattergl(
             x=filter_data[filt_num]['freq'],
             y=filter_data[filt_num]['values'],
             mode='markers',
             marker=dict(size=3, color=colors[filt_num]),
-            name=f'Filter {filt_num}',
+            name=f'Filter {display_num}',
             showlegend=False,
-            hovertemplate=f'F{filt_num}: %{{y:.1f}}dBm @ %{{x:.0f}}MHz<extra></extra>' if not fast_mode else None,
+            hovertemplate=f'F{display_num}: %{{y:.1f}}dBm @ %{{x:.0f}}MHz<extra></extra>' if not fast_mode else None,
             hoverinfo='skip' if fast_mode else None
         ))
     
@@ -183,7 +185,7 @@ def create_power_plot(frequencies, powers, filter_indices,
         title=title,
         xaxis_title="Frequency (MHz)",
         yaxis_title="Power (dBm)",
-        yaxis_range=[-80, 20],
+        yaxis_range=[-70, 10],
         xaxis_range=[-50, 350],
         template="plotly_white",
         hovermode=False if fast_mode else 'closest',

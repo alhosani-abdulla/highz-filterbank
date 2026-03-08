@@ -95,7 +95,6 @@ def load_filtercal(filepath):
             'metadata': metadata
         }
 
-
 def load_state_file(filepath, spectrum_index=0):
     """
     Load a state file (new DATA_CUBE format).

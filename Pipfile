@@ -12,6 +12,7 @@ plotly = "*"
 scikit-rf = "*"
 jupyter = "*"
 ipykernel = "*"
+highz-filterbank = {file = ".", editable = true}
 
 [dev-packages]
 

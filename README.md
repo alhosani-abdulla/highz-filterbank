@@ -59,10 +59,61 @@ Real-time data acquisition from the filterbank spectrometer.
 
 **See [docs/HARDWARE.md](docs/HARDWARE.md) for detailed wiring, pin assignments, and configuration.**
 
-## Dependencies
+## Installation
 
-### Required Repositories
-This project depends on the `High-Precision_AD_HAT` driver library:
+### Python Package Installation
+
+This repository provides Python analysis tools that can be installed as a package.
+
+#### Editable Install (for development)
+```bash
+# Clone the repository
+git clone https://github.com/alhosani-abdulla/highz-filterbank.git
+cd highz-filterbank
+
+# Install in editable mode with dependencies
+pip install -e .
+
+# Or with optional dev tools
+pip install -e ".[dev]"
+```
+
+#### Direct Git Install
+```bash
+# Install directly from GitHub
+pip install git+https://github.com/alhosani-abdulla/highz-filterbank.git
+```
+
+#### Using the Package
+After installation, import modules in Python:
+```python
+# Load FITS data
+import highz_filterbank
+from highz_filterbank import io_utils
+state_data = io_utils.load_state_file("path/to/state_1.fits")
+filtercal = io_utils.load_filtercal("path/to/filtercal_+5dBm.fits")
+
+# Create plots
+from highz_filterbank import plot_utils
+fig = plot_utils.create_power_plot(frequencies, powers, filter_indices)
+```
+
+#### S21 Calibration Data Path
+The package needs S21 correction files for calibration. Set the path:
+```bash
+# Option 1: Set environment variable
+export HIGHZ_FILTERBANK_S21_DIR="/path/to/highz-filterbank/characterization/s_parameters"
+
+# Option 2: Pass as CLI argument when running viewers
+python -m viewers.live_viewer --s21-dir "/path/to/s_parameters"
+```
+
+### Hardware C Programs
+
+The C acquisition programs require additional hardware dependencies.
+
+#### Required Repositories
+The C code depends on the `High-Precision_AD_HAT` driver library:
 ```bash
 # Both repositories should be in the highz directory:
 /home/peterson/highz/
@@ -70,7 +121,7 @@ This project depends on the `High-Precision_AD_HAT` driver library:
 └── High-Precision_AD_HAT/    # AD HAT driver (dependency)
 ```
 
-### Required Libraries
+#### Required Libraries
 - **libpigpio** - Raspberry Pi GPIO control
 - **libcfitsio** - FITS file format handling
 - **libgpiod** - GPIO device interface
@@ -141,15 +192,67 @@ gcc -o src/data_aquisition/acq src/data_aquisition/continuous_acq.c \
 
 ## Usage
 
-### Calibration
+### Python Analysis Tools
+
+After installing the package (`pip install -e .` or `pip install git+...`):
+
+#### Interactive Viewers
 ```bash
-# Run calibration
+# Live viewer (monitors ongoing acquisition)
+python src/viewers/live_viewer.py --data-dir /path/to/Data --port 8051
+
+# Data viewer (browse archived data)
+python src/viewers/data_viewer.py --data-dir /path/to/Data --port 8050
+```
+
+Or run as installed modules:
+```bash
+# Viewer modules are installed as top-level modules in this repo layout
+python -m viewers.live_viewer --data-dir /path/to/Data
+python -m viewers.data_viewer --data-dir /path/to/Data
+```
+
+#### Scripting with the Package
+```python
+import numpy as np
+from highz_filterbank import io_utils, plot_utils
+
+# Load and calibrate spectrum
+state_file = "Data/20260308/Cycle_001/state_1.fits"
+spectrum = io_utils.load_state_file(state_file, spectrum_index=0)
+
+# Build calibration from filtercal files
+cycle_dir = "Data/20260308/Cycle_001"
+calibration = io_utils.build_filter_detector_calibration(
+    cycle_dir=cycle_dir,
+    apply_s21=True,
+    s21_dir="/path/to/s_parameters"
+)
+
+# Apply calibration
+frequencies, powers, filter_indices, voltages = io_utils.apply_calibration_to_spectrum(
+    spectrum['data'],
+    spectrum['lo_frequencies'],
+    calibration,
+    return_voltages=True
+)
+
+# Create plots
+fig = plot_utils.create_power_plot(frequencies, powers, filter_indices)
+fig.show()
+```
+
+### Hardware Calibration and Acquisition
+
+#### Calibration
+```bash
+# Run calibration (requires Raspberry Pi hardware)
 ./src/calibration/calib [options]
 ```
 
-### Data Acquisition
+#### Data Acquisition
 ```bash
-# Run data acquisition
+# Run data acquisition (requires Raspberry Pi hardware)
 ./src/data_aquisition/acq [options]
 ```
 

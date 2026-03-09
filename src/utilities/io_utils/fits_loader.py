@@ -13,11 +13,17 @@ import os
 import time
 from utilities import io_utils
 
+# Import utilities
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utilities.io_utils.paths import get_default_s21_dir
+
 # Cache key: (cycle_dir, apply_s21) -> prepared calibration payload or None
 _calibration_cache = {}
 
+DEFAULT_S21_DIR = get_default_s21_dir()
 
-def load_calibration_data(cycle_dir, s21_dir, apply_s21):
+def load_calibration_data(cycle_dir, s21_dir=DEFAULT_S21_DIR, apply_s21=True):
     """Load and cache calibration artifacts for one acquisition cycle.
 
     Parameters
@@ -112,11 +118,11 @@ def load_prepared_spectrum_data(
     state_file,
     spectrum_idx,
     cycle_dir,
-    s21_dir,
     calib_toggles,
     filter_exclusions_str,
     align_freq_min,
     align_freq_max,
+    s21_dir = DEFAULT_S21_DIR,
 ):
     """Load one spectrum and return calibrated arrays ready for plotting.
 

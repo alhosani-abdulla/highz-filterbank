@@ -25,10 +25,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utilities import plot_utils
 from utilities.io_utils.fits_loader import load_prepared_spectrum_data
+from utilities.io_utils.paths import get_default_s21_dir
 
 # Configuration defaults
 DEFAULT_DATA_DIR = "/media/peterson/INDURANCE/Data"
-DEFAULT_S21_DIR = "/home/peterson/highz/highz-filterbank/characterization/s_parameters"
+DEFAULT_S21_DIR = get_default_s21_dir()
 DEFAULT_REFRESH_INTERVAL = 3000  # milliseconds (3 seconds)
 
 # Calibration alignment defaults

@@ -5,5 +5,27 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "highz-filterbank"
 version = "0.1.0"
+description = "Tools for high-z filterbank data acquisition, viewing, and analysis"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+	"numpy",
+	"matplotlib",
+	"astropy",
+	"dash",
+	"plotly",
+	"scikit-rf",
+]
+
+[project.optional-dependencies]
+dev = [
+	"jupyter",
+	"ipykernel",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

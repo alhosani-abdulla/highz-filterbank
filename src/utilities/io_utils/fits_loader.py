@@ -1,56 +1,279 @@
-"""
-FITS file loading utilities for new DATA_CUBE format
+"""FITS loading and spectrum-preparation utilities.
 
-Loads filtercal and state files with the new image cube data structure.
+This module provides helpers to:
+- Load filtercal and state FITS files stored in the DATA_CUBE schema.
+- Build and cache detector calibration objects for a cycle.
+- Prepare calibrated spectrum arrays for plotting/analysis.
 """
 
 import numpy as np
 from astropy.io import fits
 from pathlib import Path
+import os
+import time
+from utilities import io_utils
+
+# Cache key: (cycle_dir, apply_s21) -> prepared calibration payload or None
+_calibration_cache = {}
 
 
-def get_filter_centers(num_filters=21, start_mhz=904.0, step_mhz=2.6):
-    """
-    Get center frequencies for filterbank.
-    
+def load_calibration_data(cycle_dir, s21_dir, apply_s21):
+    """Load and cache calibration artifacts for one acquisition cycle.
+
     Parameters
     ----------
-    num_filters : int
-        Number of filters (default: 21)
-    start_mhz : float
-        Starting center frequency in MHz (default: 904.0)
-    step_mhz : float
-        Frequency step between filters in MHz (default: 2.6)
-    
+    cycle_dir : str or Path
+        Cycle directory expected to contain ``filtercal_+5dBm.fits`` and
+        ``filtercal_-4dBm.fits``.
+    s21_dir : str or Path
+        Directory containing S21 correction files. Only used when
+        ``apply_s21`` is True.
+    apply_s21 : bool
+        If True, apply S21 correction when building detector calibration.
+
     Returns
     -------
-    centers : ndarray
-        Center frequencies in MHz (num_filters,)
+    dict or None
+        Returns a dictionary with keys ``pos``, ``neg``, and ``calibration``
+        when calibration files are available and valid. Returns None if
+        files are missing/empty or calibration build fails. None results are
+        cached to avoid repeated I/O on subsequent calls.
+
+    Notes
+    -----
+    Cache size is capped to 3 entries to bound memory usage.
+    """
+    global _calibration_cache
+    
+    # Create cache key
+    cache_key = (cycle_dir, apply_s21)
+    
+    # Check cache first
+    if cache_key in _calibration_cache:
+        return _calibration_cache[cache_key]
+    
+    # Check that required filtercal files exist
+    filtercal_pos_file = os.path.join(cycle_dir, "filtercal_+5dBm.fits")
+    filtercal_neg_file = os.path.join(cycle_dir, "filtercal_-4dBm.fits")
+    
+    if not os.path.exists(filtercal_pos_file) or not os.path.exists(filtercal_neg_file):
+        # Cache None result too to avoid repeated checks
+        _calibration_cache[cache_key] = None
+        return None
+    
+    if os.path.getsize(filtercal_pos_file) == 0 or os.path.getsize(filtercal_neg_file) == 0:
+        _calibration_cache[cache_key] = None
+        return None
+    
+    try:
+        print(f"Loading calibration for {os.path.basename(cycle_dir)}...")
+        
+        # Load raw filtercal data for diagnostic plots
+        filtercal_pos = io_utils.load_filtercal(filtercal_pos_file)
+        filtercal_neg = io_utils.load_filtercal(filtercal_neg_file)
+        
+        # Use the new FilterDetectorCalibration which properly accounts for
+        # LO power variation with frequency
+        filter_cal = io_utils.build_filter_detector_calibration(
+            cycle_dir=cycle_dir,
+            apply_s21=apply_s21,
+            s21_dir=s21_dir if apply_s21 else None
+        )
+        
+        # Print calibration info on first load
+        filter_cal.info()
+        
+        result = {
+            'pos': filtercal_pos,
+            'neg': filtercal_neg,
+            'calibration': filter_cal
+        }
+        
+        # Cache the result
+        _calibration_cache[cache_key] = result
+        print(f"Calibration cached for {os.path.basename(cycle_dir)}")
+        
+        # Keep cache size reasonable (max 3 cycles)
+        if len(_calibration_cache) > 3:
+            # Remove oldest entry
+            oldest_key = next(iter(_calibration_cache))
+            del _calibration_cache[oldest_key]
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error loading calibration: {e}")
+        import traceback
+        traceback.print_exc()
+        _calibration_cache[cache_key] = None
+        return None
+
+def load_prepared_spectrum_data(
+    state_file,
+    spectrum_idx,
+    cycle_dir,
+    s21_dir,
+    calib_toggles,
+    filter_exclusions_str,
+    align_freq_min,
+    align_freq_max,
+):
+    """Load one spectrum and return calibrated arrays ready for plotting.
+
+    Parameters
+    ----------
+    state_file : str or Path
+        Path to a state FITS file.
+    spectrum_idx : int
+        Zero-based spectrum index within ``state_file``.
+    cycle_dir : str or Path
+        Cycle directory containing calibration FITS files.
+    s21_dir : str or Path
+        Directory with S21 correction data.
+    calib_toggles : list[str]
+        UI toggle values. Supported flags are ``"s21"`` and ``"alignment"``.
+    filter_exclusions_str : str or None
+        Comma-separated filter indices to exclude from normalization.
+    align_freq_min : float
+        Lower bound (MHz) for alignment normalization window.
+    align_freq_max : float
+        Upper bound (MHz) for alignment normalization window.
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - ``frequencies``: LO frequencies (MHz)
+        - ``powers``: calibrated/normalized power values
+        - ``filter_indices``: filter ID per point
+        - ``voltages``: calibrated voltages
+        - ``excluded_filters``: parsed exclusions as list[int]
+        - ``filtercal_data``: calibration payload or None
+        - ``time_display``: HH:MM:SS string when timestamp is parseable
+        - ``t0`` and ``t4``: timing markers used by caller logs
+
+    Notes
+    -----
+    This helper intentionally keeps debug timing prints to match existing
+    live viewer profiling behavior.
+    """
+    t0 = time.time()
+
+    spectrum_data = io_utils.load_state_file(state_file, spectrum_index=spectrum_idx)
+    t1 = time.time()
+    print(f"  Load spectrum: {(t1-t0)*1000:.1f}ms")
+
+    apply_s21 = 's21' in calib_toggles
+    filtercal_data = load_calibration_data(cycle_dir, s21_dir, apply_s21)
+    filter_cal = filtercal_data.get('calibration') if filtercal_data else None
+    t2 = time.time()
+    print(f"  Load calibration: {(t2-t1)*1000:.1f}ms")
+
+    excluded_filters = []
+    if filter_exclusions_str:
+        try:
+            excluded_filters = [int(x.strip()) for x in filter_exclusions_str.split(',') if x.strip()]
+        except ValueError:
+            pass
+
+    result = io_utils.apply_calibration_to_spectrum(
+        spectrum_data['data'],
+        spectrum_data['lo_frequencies'],
+        filter_cal if filter_cal else {},
+        return_voltages=True,
+    )
+    frequencies, powers, filter_indices, voltages = result
+    t3 = time.time()
+    print(f"  Apply calibration: {(t3-t2)*1000:.1f}ms")
+    print(f"  Data shape: {len(frequencies)} total points, {len(set(filter_indices))} unique filters")
+
+    if 'alignment' in calib_toggles and filter_cal:
+        normalization = io_utils.calculate_filter_normalization(
+            frequencies,
+            powers,
+            filter_indices,
+            freq_min=align_freq_min,
+            freq_max=align_freq_max,
+            excluded_filters=excluded_filters,
+        )
+        if normalization:
+            powers_normalized = []
+            for power, filt in zip(powers, filter_indices):
+                if filt in normalization:
+                    powers_normalized.append(power + normalization[filt])
+                else:
+                    powers_normalized.append(power)
+            powers = np.array(powers_normalized)
+
+    t4 = time.time()
+    if 'alignment' in calib_toggles and filter_cal:
+        print(f"  Normalization: {(t4-t3)*1000:.1f}ms")
+
+    timestamp = spectrum_data.get('timestamp', '')
+    if isinstance(timestamp, str) and len(timestamp) >= 14:
+        time_display = f"{timestamp[8:10]}:{timestamp[10:12]}:{timestamp[12:14]}"
+    else:
+        time_display = str(timestamp)
+
+    return {
+        'frequencies': frequencies,
+        'powers': powers,
+        'filter_indices': filter_indices,
+        'voltages': voltages,
+        'excluded_filters': excluded_filters,
+        'filtercal_data': filtercal_data,
+        'time_display': time_display,
+        't0': t0,
+        't4': t4,
+    }
+
+def get_filter_centers(num_filters=21, start_mhz=904.0, step_mhz=2.6):
+    """Return nominal center frequencies for evenly spaced filter channels.
+
+    Parameters
+    ----------
+    num_filters : int, optional
+        Number of filters/channels. Default is 21.
+    start_mhz : float, optional
+        Center frequency of filter index 0 in MHz. Default is 904.0.
+    step_mhz : float, optional
+        Frequency spacing between adjacent filter centers in MHz.
+        Default is 2.6.
+
+    Returns
+    -------
+    ndarray
+        One-dimensional array of shape ``(num_filters,)`` in MHz.
     """
     return start_mhz + step_mhz * np.arange(num_filters)
 
 
 def load_filtercal(filepath):
-    """
-    Load a filtercal FITS file (new DATA_CUBE format).
-    
-    Format: DATA_CUBE is a flat 1D array that must be reshaped to (n_freq, n_channels)
-    
+    """Load a filtercal FITS file using the DATA_CUBE layout.
+
+    Expected FITS structure:
+    - PRIMARY HDU: metadata headers (for example ``N_LO_PTS``, ``N_FILTERS``)
+    - HDU 1 table: ``LO_FREQUENCIES`` and flat ``DATA_CUBE`` arrays
+
+    ``DATA_CUBE`` is reshaped to ``(n_lo_pts, n_filters)`` where rows are
+    LO frequency points and columns are filter channels.
+
     Parameters
     ----------
     filepath : str or Path
-        Path to filtercal FITS file (e.g., filtercal_+5dBm.fits)
-    
+        Path to filtercal FITS file (for example ``filtercal_+5dBm.fits``).
+
     Returns
     -------
-    dict with keys:
-        'lo_frequencies' : ndarray (n_freq,) - LO sweep frequencies in MHz
-        'data' : ndarray (n_freq, 21) - ADC counts for 21 filter channels
-        'n_freq' : int - number of LO frequency points
-        'n_channels' : int - number of filter channels (21)
-        'state' : str - state identifier (e.g., 'filtercal_+5dBm')
-        'timestamp' : str - acquisition timestamp
-        'metadata' : dict - all PRIMARY HDU header items
+    dict
+        Keys include ``lo_frequencies``, ``data``, ``n_freq``, ``n_channels``,
+        ``state``, ``timestamp``, and ``metadata``.
+
+    Raises
+    ------
+    ValueError
+        If flattened ``DATA_CUBE`` length does not match
+        ``n_lo_pts * n_filters`` from headers.
     """
     with fits.open(filepath) as hdul:
         # Primary HDU has metadata
@@ -96,31 +319,28 @@ def load_filtercal(filepath):
         }
 
 def load_state_file(filepath, spectrum_index=0):
-    """
-    Load a state file (new DATA_CUBE format).
-    
-    State files can contain multiple spectra. Each spectrum has its own
-    DATA_CUBE entry, timestamp, and LO_FREQUENCIES array.
-    
+    """Load one spectrum from a state FITS file using the DATA_CUBE layout.
+
+    State files can contain multiple spectra (one row per spectrum in HDU 1).
+
     Parameters
     ----------
     filepath : str or Path
-        Path to state FITS file (e.g., state_1.fits)
-    spectrum_index : int
-        Which spectrum to load (default: 0 for first)
-    
+        Path to state FITS file (for example ``state_1.fits``).
+    spectrum_index : int, optional
+        Zero-based row index of spectrum to load. Default is 0.
+
     Returns
     -------
-    dict with keys:
-        'lo_frequencies' : ndarray (n_freq,) - LO sweep frequencies in MHz
-        'data' : ndarray (n_freq, 21) - ADC counts for 21 filter channels
-        'n_freq' : int - number of LO frequency points
-        'n_channels' : int - number of filter channels (21)
-        'state' : int or str - state number
-        'cycle_id' : str - cycle identifier
-        'timestamp' : str - spectrum acquisition timestamp
-        'n_spectra' : int - total number of spectra in file
-        'metadata' : dict - all PRIMARY HDU header items
+    dict
+        Keys include ``lo_frequencies``, ``data``, ``n_freq``, ``n_channels``,
+        ``state``, ``cycle_id``, ``timestamp``, ``n_spectra``, and ``metadata``.
+
+    Raises
+    ------
+    ValueError
+        If ``spectrum_index`` is outside available rows, or if flattened
+        ``DATA_CUBE`` length does not match ``n_lo_pts * n_filters``.
     """
     with fits.open(filepath) as hdul:
         # Primary HDU has metadata
@@ -177,20 +397,19 @@ def load_state_file(filepath, spectrum_index=0):
 
 
 def find_closest_lo_row(lo_frequencies, target_freq):
-    """
-    Find the row index with LO frequency closest to target.
-    
+    """Return index of the LO frequency sample nearest a target value.
+
     Parameters
     ----------
     lo_frequencies : ndarray
-        Array of LO frequencies (MHz)
+        One-dimensional LO frequency array in MHz.
     target_freq : float
-        Target frequency (MHz)
-    
+        Desired frequency in MHz.
+
     Returns
     -------
     int
-        Row index of closest LO frequency
+        Index of the closest element in ``lo_frequencies``.
     """
     distances = np.abs(lo_frequencies - target_freq)
     return int(np.argmin(distances))

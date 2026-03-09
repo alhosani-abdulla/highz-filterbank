@@ -23,7 +23,8 @@ import traceback
 # Import utilities
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utilities import io_utils, plot_utils
+from utilities import plot_utils
+from utilities.io_utils.fits_loader import load_prepared_spectrum_data
 
 # Configuration defaults
 DEFAULT_DATA_DIR = "/media/peterson/INDURANCE/Data"
@@ -167,7 +168,6 @@ app.layout = html.Div([
     dcc.Store(id='align-freq-max-store', data=DEFAULT_ALIGN_FREQ_MAX),
 ])
 
-
 def find_most_recent_cycle(data_dir):
     """Find the most recently modified cycle directory with valid data"""
     from astropy.io import fits
@@ -247,75 +247,6 @@ def find_latest_spectrum(cycle_dir):
         print(f"Error reading state file {latest_state}: {e}")
         return None, 0, 0
 
-
-def load_calibration_data(cycle_dir, s21_dir, apply_s21):
-    """Load filtercal and build calibration using FilterDetectorCalibration (with caching)"""
-    global _calibration_cache
-    
-    # Create cache key
-    cache_key = (cycle_dir, apply_s21)
-    
-    # Check cache first
-    if cache_key in _calibration_cache:
-        return _calibration_cache[cache_key]
-    
-    # Check that required filtercal files exist
-    filtercal_pos_file = os.path.join(cycle_dir, "filtercal_+5dBm.fits")
-    filtercal_neg_file = os.path.join(cycle_dir, "filtercal_-4dBm.fits")
-    
-    if not os.path.exists(filtercal_pos_file) or not os.path.exists(filtercal_neg_file):
-        # Cache None result too to avoid repeated checks
-        _calibration_cache[cache_key] = None
-        return None
-    
-    if os.path.getsize(filtercal_pos_file) == 0 or os.path.getsize(filtercal_neg_file) == 0:
-        _calibration_cache[cache_key] = None
-        return None
-    
-    try:
-        print(f"Loading calibration for {os.path.basename(cycle_dir)}...")
-        
-        # Load raw filtercal data for diagnostic plots
-        filtercal_pos = io_utils.load_filtercal(filtercal_pos_file)
-        filtercal_neg = io_utils.load_filtercal(filtercal_neg_file)
-        
-        # Use the new FilterDetectorCalibration which properly accounts for
-        # LO power variation with frequency
-        filter_cal = io_utils.build_filter_detector_calibration(
-            cycle_dir=cycle_dir,
-            apply_s21=apply_s21,
-            s21_dir=s21_dir if apply_s21 else None
-        )
-        
-        # Print calibration info on first load
-        filter_cal.info()
-        
-        result = {
-            'pos': filtercal_pos,
-            'neg': filtercal_neg,
-            'calibration': filter_cal
-        }
-        
-        # Cache the result
-        _calibration_cache[cache_key] = result
-        print(f"Calibration cached for {os.path.basename(cycle_dir)}")
-        
-        # Keep cache size reasonable (max 3 cycles)
-        if len(_calibration_cache) > 3:
-            # Remove oldest entry
-            oldest_key = next(iter(_calibration_cache))
-            del _calibration_cache[oldest_key]
-        
-        return result
-        
-    except Exception as e:
-        print(f"Error loading calibration: {e}")
-        import traceback
-        traceback.print_exc()
-        _calibration_cache[cache_key] = None
-        return None
-
-
 @app.callback(
     Output('refresh-interval', 'interval'),
     Input('refresh-interval-input', 'value')
@@ -390,66 +321,26 @@ def update_live_view(n_intervals, view_mode, filtercal_mode, calib_toggles,
         return html.Div([dcc.Graph(figure=empty_fig)]), status, last_update
     
     try:
-        # Load spectrum
-        t0 = time.time()
-        spectrum_data = io_utils.load_state_file(state_file, spectrum_index=spectrum_idx)
-        t1 = time.time()
-        print(f"  Load spectrum: {(t1-t0)*1000:.1f}ms")
-        
-        # Load calibration (cached)
-        apply_s21 = 's21' in calib_toggles
-        filtercal_data = load_calibration_data(cycle_dir, s21_dir, apply_s21)
-        filter_cal = filtercal_data.get('calibration') if filtercal_data else None
-        t2 = time.time()
-        print(f"  Load calibration: {(t2-t1)*1000:.1f}ms")
-        
-        # Parse filter exclusions
-        excluded_filters = []
-        if filter_exclusions_str:
-            try:
-                excluded_filters = [int(x.strip()) for x in filter_exclusions_str.split(',') if x.strip()]
-            except ValueError:
-                pass
-        
-        # Apply calibration to spectrum
-        result = io_utils.apply_calibration_to_spectrum(
-            spectrum_data['data'],
-            spectrum_data['lo_frequencies'],
-            filter_cal if filter_cal else {},
-            return_voltages=True
+        prepared = load_prepared_spectrum_data(
+            state_file=state_file,
+            spectrum_idx=spectrum_idx,
+            cycle_dir=cycle_dir,
+            s21_dir=s21_dir,
+            calib_toggles=calib_toggles,
+            filter_exclusions_str=filter_exclusions_str,
+            align_freq_min=align_freq_min,
+            align_freq_max=align_freq_max,
         )
-        frequencies, powers, filter_indices, voltages = result
-        t3 = time.time()
-        print(f"  Apply calibration: {(t3-t2)*1000:.1f}ms")
-        print(f"  Data shape: {len(frequencies)} total points, {len(set(filter_indices))} unique filters")
-        
-        # Apply filter alignment if enabled
-        if 'alignment' in calib_toggles and filter_cal:
-            normalization = io_utils.calculate_filter_normalization(
-                frequencies, powers, filter_indices,
-                freq_min=align_freq_min,
-                freq_max=align_freq_max,
-                excluded_filters=excluded_filters
-            )
-            if normalization:
-                powers_normalized = []
-                for power, filt in zip(powers, filter_indices):
-                    if filt in normalization:
-                        powers_normalized.append(power + normalization[filt])
-                    else:
-                        powers_normalized.append(power)
-                powers = np.array(powers_normalized)
-        
-        t4 = time.time()
-        if 'alignment' in calib_toggles and filter_cal:
-            print(f"  Normalization: {(t4-t3)*1000:.1f}ms")
-        
-        # Extract timestamp
-        timestamp = spectrum_data.get('timestamp', '')
-        if isinstance(timestamp, str) and len(timestamp) >= 14:
-            time_display = f"{timestamp[8:10]}:{timestamp[10:12]}:{timestamp[12:14]}"
-        else:
-            time_display = str(timestamp)
+
+        frequencies = prepared['frequencies']
+        powers = prepared['powers']
+        filter_indices = prepared['filter_indices']
+        voltages = prepared['voltages']
+        excluded_filters = prepared['excluded_filters']
+        filtercal_data = prepared['filtercal_data']
+        time_display = prepared['time_display']
+        t0 = prepared['t0']
+        t4 = prepared['t4']
         
         # Create plots based on view mode
         if view_mode == 'power':

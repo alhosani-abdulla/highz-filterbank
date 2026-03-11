@@ -12,6 +12,7 @@ from pathlib import Path
 import os
 import time
 import logging
+import json
 from tqdm import tqdm
 from utilities import io_utils
 
@@ -660,7 +661,14 @@ class FBFileLoader:
         reference_frequencies = None  # Will be set from first spectrum
         
         logger.info("Loading state %d from %d cycles...", state_no, len(cycle_dirs))
-        
+       
+        # Load calibration settings based on toggles
+        calib_toggles = []
+        if apply_s21:
+            calib_toggles.append('s21')
+        if apply_alignment:
+            calib_toggles.append('alignment') 
+
         # Process each cycle
         cycle_iterator = tqdm(
             enumerate(cycle_dirs),
@@ -680,13 +688,6 @@ class FBFileLoader:
             if os.path.getsize(state_file) == 0:
                 logger.warning("Empty state file: %s", state_file)
                 continue
-            
-            # Load calibration for this cycle
-            calib_toggles = []
-            if apply_s21:
-                calib_toggles.append('s21')
-            if apply_alignment:
-                calib_toggles.append('alignment')
                 
             filtercal_data = load_calibration_data(cycle_dir, s21_dir, apply_s21)
             filter_cal = filtercal_data.get('calibration') if filtercal_data else None
@@ -833,3 +834,101 @@ class FBFileLoader:
         )
         
         return timestamps, reference_frequencies, powers_2d, cycle_ids
+
+    def save(self,
+             output_path,
+             state_no,
+             apply_s21=True,
+             apply_alignment=True,
+             align_freq_min=50,
+             align_freq_max=80,
+             excluded_filters=None,
+             s21_dir=DEFAULT_S21_DIR,
+             overwrite=False):
+        """Run ``load()`` and save results to a compressed NPZ archive.
+
+        Parameters
+        ----------
+        output_path : str or Path
+            Output archive path. ``.npz`` extension is appended if omitted.
+        state_no : int
+            State number forwarded to ``load()``.
+        excluded_filters : list[int] or None, optional
+            Filter indices excluded from alignment calculation.
+        s21_dir : str or Path, optional
+            Directory containing S21 correction files.
+        overwrite : bool, optional
+            If False and output already exists, raises ``FileExistsError``.
+
+        Returns
+        -------
+        Path
+            Path to the written ``.npz`` file.
+
+        Notes
+        -----
+        A sidecar JSON file named ``<output_stem>_metadata.json`` is also
+        written with load settings and output summary.
+        """
+        if excluded_filters is None:
+            excluded_filters = []
+
+        output_path = Path(output_path)
+        if output_path.suffix.lower() != ".npz":
+            output_path = output_path.with_suffix(".npz")
+
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(
+                f"Output file already exists: {output_path}. "
+                "Use overwrite=True to replace it."
+            )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        timestamps, frequencies, powers, cycle_ids = self.load(
+            state_no=state_no,
+            apply_s21=apply_s21,
+            apply_alignment=apply_alignment,
+            align_freq_min=align_freq_min,
+            align_freq_max=align_freq_max,
+            excluded_filters=excluded_filters,
+            s21_dir=s21_dir,
+        )
+
+        timestamps_iso = np.array(
+            [ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+             for ts in timestamps],
+            dtype="U32",
+        )
+
+        np.savez_compressed(
+            output_path,
+            timestamps=timestamps_iso,
+            frequencies=frequencies,
+            powers=powers,
+            cycle_ids=cycle_ids,
+        )
+
+        metadata = {
+            "source_dir": self.dir_path,
+            "state_no": int(state_no),
+            "apply_s21": bool(apply_s21),
+            "apply_alignment": bool(apply_alignment),
+            "align_freq_min": float(align_freq_min),
+            "align_freq_max": float(align_freq_max),
+            "excluded_filters": [int(x) for x in excluded_filters],
+            "s21_dir": str(s21_dir) if s21_dir is not None else None,
+            "n_spectra": int(powers.shape[0]) if powers.ndim >= 1 else 0,
+            "n_freq": int(frequencies.shape[0]) if frequencies.ndim >= 1 else 0,
+            "npz_file": output_path.name,
+        }
+
+        metadata_path = output_path.with_name(f"{output_path.stem}_metadata.json")
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
+        logger.info("Saved load() results to %s", output_path)
+        logger.info("Saved metadata to %s", metadata_path)
+
+        return output_path
+    

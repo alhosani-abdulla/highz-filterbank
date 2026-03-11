@@ -35,10 +35,6 @@ from .log_detector import (
     get_lo_power_correction
 )
 
-from .paths import (
-    get_default_s21_dir,
-)
-
 __all__ = [
     'load_calibration_data',
     'load_prepared_spectrum_data',

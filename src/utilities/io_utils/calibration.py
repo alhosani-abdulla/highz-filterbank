@@ -6,9 +6,12 @@ Handles S21 corrections from S-parameter files and filter alignment normalizatio
 
 import numpy as np
 from pathlib import Path
+import logging
 from .fits_loader import get_filter_centers, find_closest_lo_row
 from .conversions import adc_counts_to_voltage
 from .log_detector import FilterDetectorCalibration
+
+logger = logging.getLogger(__name__)
 
 def load_s21_corrections(s21_dir):
     """
@@ -30,13 +33,13 @@ def load_s21_corrections(s21_dir):
     s21_dir = Path(s21_dir)
     
     if not s21_dir.exists():
-        print(f"S21 directory not found: {s21_dir}")
+        logger.warning("S21 directory not found: %s", s21_dir)
         return None
     
     try:
         import skrf as rf
     except ImportError:
-        print("Warning: scikit-rf not installed, S21 corrections unavailable")
+        logger.warning("scikit-rf not installed, S21 corrections unavailable")
         return None
     
     s21_data = {}
@@ -65,12 +68,12 @@ def load_s21_corrections(s21_dir):
                 'freqs': np.array(freqs_mhz),
                 's21_db': np.array(s21_db)
             }
-        except Exception as e:
-            print(f"Error loading S2P file for filter {filt_num}: {e}")
+        except Exception:
+            logger.exception("Error loading S2P file for filter %d", filt_num)
             continue
     
     if len(s21_data) > 0:
-        print(f"Loaded S21 corrections for {len(s21_data)}/21 filters")
+        logger.info("Loaded S21 corrections for %d/21 filters", len(s21_data))
         return s21_data
     else:
         return None
@@ -144,7 +147,9 @@ def build_filter_calibration(filtercal_pos, filtercal_neg,
         voltage_diff = high_voltage - low_voltage
         
         if abs(voltage_diff) < 0.001:
-            print(f"Warning: Filter {filt_num} has insufficient voltage range, skipping")
+            logger.warning(
+                "Filter %d has insufficient voltage range, skipping", filt_num
+            )
             continue
         
         slope = (high_power_at_detector - low_power_at_detector) / voltage_diff
@@ -160,7 +165,7 @@ def build_filter_calibration(filtercal_pos, filtercal_neg,
         }
     
     if len(filter_calibrations) < 21:
-        print(f"Warning: Only calibrated {len(filter_calibrations)}/21 filters")
+        logger.warning("Only calibrated %d/21 filters", len(filter_calibrations))
     
     return filter_calibrations
 
@@ -330,7 +335,7 @@ def calculate_filter_normalization(frequencies, powers, filters,
                     if f not in excluded_filters and len(filter_data[f]['freqs']) > 1]
     
     if len(valid_filters) < 2:
-        print("Not enough valid filters for normalization")
+        logger.warning("Not enough valid filters for normalization")
         return None
     
     # Extract data in alignment frequency region for each filter
@@ -348,7 +353,11 @@ def calculate_filter_normalization(frequencies, powers, filters,
             region_data[filt] = np.mean(region_powers)
     
     if len(region_data) < 2:
-        print(f"Not enough data in frequency region {freq_min}-{freq_max} MHz for normalization")
+        logger.warning(
+            "Not enough data in frequency region %.3f-%.3f MHz for normalization",
+            freq_min,
+            freq_max,
+        )
         return None
     
     # Calculate mean power in region across all filters
@@ -361,8 +370,12 @@ def calculate_filter_normalization(frequencies, powers, filters,
         offset = mean_region_power - region_data[filt]
         normalization[filt] = offset
     
-    print(f"Calculated normalization for {len(normalization)} filters "
-          f"(using {freq_min}-{freq_max} MHz region)")
-    print(f"Mean power in region: {mean_region_power:.2f} dBm")
+    logger.info(
+        "Calculated normalization for %d filters (using %.3f-%.3f MHz region)",
+        len(normalization),
+        freq_min,
+        freq_max,
+    )
+    logger.debug("Mean power in region: %.2f dBm", mean_region_power)
     
     return normalization if len(normalization) > 0 else None

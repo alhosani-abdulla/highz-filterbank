@@ -28,9 +28,8 @@ def get_default_s21_dir():
     if env_override:
         return env_override
 
-    repo_s21_dir = Path(__file__).resolve().parents[3] / "characterization" / "s_parameters"
+    repo_s21_dir = Path(__file__).resolve().parents[3] / "characterization" / "s_parameters" / "filter_s21_20260226"
     return str(repo_s21_dir)
-
 
 def get_default_calibration_file():
     """Return the default log-detector calibration file with env override.

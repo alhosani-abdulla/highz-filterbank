@@ -9,9 +9,12 @@ import numpy as np
 from scipy.interpolate import interp1d
 from pathlib import Path
 from astropy.io import fits
+import logging
 
 from .conversions import adc_counts_to_voltage
 from .VARS import DEFAULT_CALIBRATION_FILE, ADC_REFERENCE_VOLTAGE
+
+logger = logging.getLogger(__name__)
 
 class LogDetectorCalibration:
     """
@@ -195,11 +198,11 @@ class LogDetectorCalibration:
     
     def info(self):
         """Print calibration information."""
-        print(f"Log Detector Calibration")
-        print(f"  File: {self.calibration_file}")
-        print(f"  Valid voltage range: {self.v_min:.4f} - {self.v_max:.4f} V")
-        print(f"  Valid power range: {self.p_min:.1f} - {self.p_max:.1f} dBm")
-        print(f"  Calibration points: {len(self.voltages)}")
+        logger.info("Log Detector Calibration")
+        logger.info("  File: %s", self.calibration_file)
+        logger.info("  Valid voltage range: %.4f - %.4f V", self.v_min, self.v_max)
+        logger.info("  Valid power range: %.1f - %.1f dBm", self.p_min, self.p_max)
+        logger.info("  Calibration points: %d", len(self.voltages))
 
 
 class LOPowerLoader:
@@ -315,16 +318,31 @@ class LOPowerLoader:
     
     def info(self):
         """Print LO power information."""
-        print(f"LO Power Data from {self.fits_file.name}")
-        print(f"  Frequency range: {self.frequencies[0]:.1f} - {self.frequencies[-1]:.1f} MHz")
-        print(f"  Number of points: {len(self.frequencies)}")
-        print(f"  Mean power: {np.mean(self.powers):.2f} dBm")
-        print(f"  Std dev: {np.std(self.powers):.2f} dB")
-        print(f"  Min power: {np.min(self.powers):.2f} dBm @ {self.frequencies[np.argmin(self.powers)]:.1f} MHz")
-        print(f"  Max power: {np.max(self.powers):.2f} dBm @ {self.frequencies[np.argmax(self.powers)]:.1f} MHz")
-        print(f"  Peak-to-peak: {np.ptp(self.powers):.2f} dB")
-        print(f"  Mean uncertainty: {np.mean(self.power_uncertainties):.3f} dB (1-sigma)")
-        print(f"  Max uncertainty: {np.max(self.power_uncertainties):.3f} dB")
+        logger.info("LO Power Data from %s", self.fits_file.name)
+        logger.info(
+            "  Frequency range: %.1f - %.1f MHz",
+            self.frequencies[0],
+            self.frequencies[-1],
+        )
+        logger.info("  Number of points: %d", len(self.frequencies))
+        logger.info("  Mean power: %.2f dBm", np.mean(self.powers))
+        logger.info("  Std dev: %.2f dB", np.std(self.powers))
+        logger.info(
+            "  Min power: %.2f dBm @ %.1f MHz",
+            np.min(self.powers),
+            self.frequencies[np.argmin(self.powers)],
+        )
+        logger.info(
+            "  Max power: %.2f dBm @ %.1f MHz",
+            np.max(self.powers),
+            self.frequencies[np.argmax(self.powers)],
+        )
+        logger.info("  Peak-to-peak: %.2f dB", np.ptp(self.powers))
+        logger.info(
+            "  Mean uncertainty: %.3f dB (1-sigma)",
+            np.mean(self.power_uncertainties),
+        )
+        logger.info("  Max uncertainty: %.3f dB", np.max(self.power_uncertainties))
 
 
 class FilterDetectorCalibration:
@@ -456,14 +474,18 @@ class FilterDetectorCalibration:
                     # Import locally to avoid circular dependency
                     from .calibration import load_s21_corrections
                     s21_data = load_s21_corrections(self.s21_dir)
-                    print(f"Loaded S21 corrections for {len(s21_data)} filters from {self.s21_dir.name}")
-                except Exception as e:
-                    print(f"Warning: Could not load S21 corrections: {e}")
-                    print("Continuing with LO output power (no S21 correction)")
+                    logger.info(
+                        "Loaded S21 corrections for %d filters from %s",
+                        len(s21_data),
+                        self.s21_dir.name,
+                    )
+                except Exception:
+                    logger.exception("Could not load S21 corrections")
+                    logger.warning("Continuing with LO output power (no S21 correction)")
                     self.apply_s21 = False
             else:
-                print(f"Warning: S21 directory not found: {self.s21_dir}")
-                print("Continuing with LO output power (no S21 correction)")
+                logger.warning("S21 directory not found: %s", self.s21_dir)
+                logger.warning("Continuing with LO output power (no S21 correction)")
                 self.apply_s21 = False
         
         # For each filter, find the frequency index closest to its center
@@ -514,8 +536,10 @@ class FilterDetectorCalibration:
         # Check for problematic calibrations
         if np.any(np.abs(dV) < 0.01):  # Less than 10 mV difference
             warnings_idx = np.where(np.abs(dV) < 0.01)[0]
-            print(f"Warning: Small voltage differences for filters: {warnings_idx + 1}")
-            print("Linear calibration may be inaccurate for these filters.")
+            logger.warning(
+                "Small voltage differences for filters: %s", warnings_idx + 1
+            )
+            logger.warning("Linear calibration may be inaccurate for these filters.")
     
     def voltage_to_power(self, voltages, filter_nums=None, clip_to_noise_floor=True):
         """
@@ -587,19 +611,38 @@ class FilterDetectorCalibration:
     
     def info(self):
         """Print calibration information."""
-        print(f"Filter Detector Linear Calibration")
-        print(f"  Cycle: {self.cycle_dir.name}")
-        print(f"  Number of filters: {self.n_filters}")
-        print(f"  Calibration method: Two-point at each filter's center frequency")
+        logger.info("Filter Detector Linear Calibration")
+        logger.info("  Cycle: %s", self.cycle_dir.name)
+        logger.info("  Number of filters: %d", self.n_filters)
+        logger.info("  Calibration method: Two-point at each filter's center frequency")
         if self.apply_s21:
-            print(f"  Calibration reference: Detector input power (with S21 corrections)")
+            logger.info("  Calibration reference: Detector input power (with S21 corrections)")
         else:
-            print(f"  Calibration reference: LO output power (no S21 corrections)")
-        print(f"  Power range: {np.min(self.powers_low):.2f} to {np.max(self.powers_high):.2f} dBm")
-        print(f"  Voltage range: {np.min(self.voltages_high):.3f} to {np.max(self.voltages_low):.3f} V")
-        print(f"  Slope range: {np.min(self.slopes):.2f} to {np.max(self.slopes):.2f} dBm/V")
-        print(f"  Slope mean: {np.mean(self.slopes):.2f} dBm/V, std: {np.std(self.slopes):.2f} dBm/V")
-        print(f"  Detector noise floor: {self.detector_noise_floor_dbm:.1f} dBm (clips extrapolation)")
+            logger.info("  Calibration reference: LO output power (no S21 corrections)")
+        logger.info(
+            "  Power range: %.2f to %.2f dBm",
+            np.min(self.powers_low),
+            np.max(self.powers_high),
+        )
+        logger.info(
+            "  Voltage range: %.3f to %.3f V",
+            np.min(self.voltages_high),
+            np.max(self.voltages_low),
+        )
+        logger.info(
+            "  Slope range: %.2f to %.2f dBm/V",
+            np.min(self.slopes),
+            np.max(self.slopes),
+        )
+        logger.info(
+            "  Slope mean: %.2f dBm/V, std: %.2f dBm/V",
+            np.mean(self.slopes),
+            np.std(self.slopes),
+        )
+        logger.info(
+            "  Detector noise floor: %.1f dBm (clips extrapolation)",
+            self.detector_noise_floor_dbm,
+        )
 
 
 # Convenience functions

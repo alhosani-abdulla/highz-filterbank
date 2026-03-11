@@ -11,12 +11,7 @@ from pathlib import Path
 from astropy.io import fits
 
 from .conversions import adc_counts_to_voltage
-
-
-# Default paths - can be overridden
-DEFAULT_CALIBRATION_FILE = '/home/peterson/highz/highz-filterbank/characterization/log_detector/calibration_20260226.csv'
-ADC_REFERENCE_VOLTAGE = 2.5  # V (log detector ADC reference)
-
+from .VARS import DEFAULT_CALIBRATION_FILE, ADC_REFERENCE_VOLTAGE
 
 class LogDetectorCalibration:
     """

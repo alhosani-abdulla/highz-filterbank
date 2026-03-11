@@ -11,12 +11,15 @@ from astropy.io import fits
 from pathlib import Path
 import os
 import time
+import logging
 from utilities import io_utils
 
 # Import utilities
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from .VARS import *
+
+logger = logging.getLogger(__name__)
 
 # Cache key: (cycle_dir, apply_s21) -> prepared calibration payload or None
 _calibration_cache = {}
@@ -70,7 +73,7 @@ def load_calibration_data(cycle_dir, s21_dir=DEFAULT_S21_DIR, apply_s21=True):
         return None
     
     try:
-        print(f"Loading calibration for {os.path.basename(cycle_dir)}...")
+        logger.info("Loading calibration for %s...", os.path.basename(cycle_dir))
         
         # Load raw filtercal data for diagnostic plots
         filtercal_pos = io_utils.load_filtercal(filtercal_pos_file)
@@ -95,7 +98,7 @@ def load_calibration_data(cycle_dir, s21_dir=DEFAULT_S21_DIR, apply_s21=True):
         
         # Cache the result
         _calibration_cache[cache_key] = result
-        print(f"Calibration cached for {os.path.basename(cycle_dir)}")
+        logger.info("Calibration cached for %s", os.path.basename(cycle_dir))
         
         # Keep cache size reasonable (max 3 cycles)
         if len(_calibration_cache) > 3:
@@ -105,10 +108,8 @@ def load_calibration_data(cycle_dir, s21_dir=DEFAULT_S21_DIR, apply_s21=True):
         
         return result
         
-    except Exception as e:
-        print(f"Error loading calibration: {e}")
-        import traceback
-        traceback.print_exc()
+    except Exception:
+        logger.exception("Error loading calibration")
         _calibration_cache[cache_key] = None
         return None
 
@@ -120,7 +121,7 @@ def load_prepared_spectrum_data(
     align_freq_min=DEFAULT_ALIGN_FREQ_MIN,
     align_freq_max=DEFAULT_ALIGN_FREQ_MAX,
     s21_dir = DEFAULT_S21_DIR,
-    calib_toggles=['s21', 'alignment'],
+    calib_toggles=['s21', 'alignment']
 ):
     """Load one spectrum and return calibrated arrays ready for plotting.
 
@@ -165,13 +166,13 @@ def load_prepared_spectrum_data(
 
     spectrum_data = io_utils.load_state_file(state_file, spectrum_index=spectrum_idx)
     t1 = time.time()
-    print(f"  Load spectrum: {(t1-t0)*1000:.1f}ms")
+    logger.debug("  Load spectrum: %.1fms", (t1 - t0) * 1000)
 
     apply_s21 = 's21' in calib_toggles
     filtercal_data = load_calibration_data(cycle_dir, s21_dir, apply_s21)
     filter_cal = filtercal_data.get('calibration') if filtercal_data else None
     t2 = time.time()
-    print(f"  Load calibration: {(t2-t1)*1000:.1f}ms")
+    logger.debug("  Load calibration: %.1fms", (t2 - t1) * 1000)
 
     excluded_filters = []
     if filter_exclusions_str:
@@ -188,8 +189,12 @@ def load_prepared_spectrum_data(
     )
     frequencies, powers, filter_indices, voltages = result
     t3 = time.time()
-    print(f"  Apply calibration: {(t3-t2)*1000:.1f}ms")
-    print(f"  Data shape: {len(frequencies)} total points, {len(set(filter_indices))} unique filters")
+    logger.debug("  Apply calibration: %.1fms", (t3 - t2) * 1000)
+    logger.debug(
+        "  Data shape: %d total points, %d unique filters",
+        len(frequencies),
+        len(set(filter_indices)),
+    )
 
     if 'alignment' in calib_toggles and filter_cal:
         normalization = io_utils.calculate_filter_normalization(
@@ -211,7 +216,7 @@ def load_prepared_spectrum_data(
 
     t4 = time.time()
     if 'alignment' in calib_toggles and filter_cal:
-        print(f"  Normalization: {(t4-t3)*1000:.1f}ms")
+        logger.debug("  Normalization: %.1fms", (t4 - t3) * 1000)
 
     timestamp = spectrum_data.get('timestamp', '')
     if isinstance(timestamp, str) and len(timestamp) >= 14:

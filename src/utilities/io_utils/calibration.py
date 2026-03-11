@@ -10,7 +10,6 @@ from .fits_loader import get_filter_centers, find_closest_lo_row
 from .conversions import adc_counts_to_voltage
 from .log_detector import FilterDetectorCalibration
 
-
 def load_s21_corrections(s21_dir):
     """
     Load S21 correction data for all filters from .s2p files.

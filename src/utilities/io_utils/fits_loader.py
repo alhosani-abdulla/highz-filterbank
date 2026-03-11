@@ -12,6 +12,7 @@ from pathlib import Path
 import os
 import time
 import logging
+from tqdm import tqdm
 from utilities import io_utils
 
 # Import utilities
@@ -661,7 +662,13 @@ class FBFileLoader:
         logger.info("Loading state %d from %d cycles...", state_no, len(cycle_dirs))
         
         # Process each cycle
-        for cycle_idx, cycle_dir in enumerate(cycle_dirs):
+        cycle_iterator = tqdm(
+            enumerate(cycle_dirs),
+            total=len(cycle_dirs),
+            desc=f"Loading state {state_no}",
+            unit="cycle",
+        )
+        for cycle_idx, cycle_dir in cycle_iterator:
             cycle_name = os.path.basename(cycle_dir)
             state_file = os.path.join(cycle_dir, f"state_{state_no}.fits")
             

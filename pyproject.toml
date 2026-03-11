@@ -15,6 +15,7 @@ dependencies = [
 	"astropy",
 	"dash",
 	"plotly",
+	"tqdm",
 	"scikit-rf",
 ]
 

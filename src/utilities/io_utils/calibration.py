@@ -73,7 +73,7 @@ def load_s21_corrections(s21_dir):
             continue
     
     if len(s21_data) > 0:
-        logger.info("Loaded S21 corrections for %d/21 filters", len(s21_data))
+        logger.debug("Loaded S21 corrections for %d/21 filters", len(s21_data))
         return s21_data
     else:
         return None
@@ -370,7 +370,7 @@ def calculate_filter_normalization(frequencies, powers, filters,
         offset = mean_region_power - region_data[filt]
         normalization[filt] = offset
     
-    logger.info(
+    logger.debug(
         "Calculated normalization for %d filters (using %.3f-%.3f MHz region)",
         len(normalization),
         freq_min,

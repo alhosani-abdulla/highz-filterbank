@@ -474,7 +474,7 @@ class FilterDetectorCalibration:
                     # Import locally to avoid circular dependency
                     from .calibration import load_s21_corrections
                     s21_data = load_s21_corrections(self.s21_dir)
-                    logger.info(
+                    logger.debug(
                         "Loaded S21 corrections for %d filters from %s",
                         len(s21_data),
                         self.s21_dir.name,

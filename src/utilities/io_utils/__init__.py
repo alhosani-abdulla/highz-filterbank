@@ -11,7 +11,8 @@ from .fits_loader import (
     load_filtercal,
     load_state_file,
     get_filter_centers,
-    find_closest_lo_row
+    find_closest_lo_row,
+    FBFileLoader
 )
 
 from .calibration import (
@@ -47,6 +48,7 @@ __all__ = [
     'load_state_file',
     'get_filter_centers',
     'find_closest_lo_row',
+    'FBFileLoader',
     'load_s21_corrections',
     'build_filter_calibration',
     'build_filter_detector_calibration',

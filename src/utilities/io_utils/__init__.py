@@ -6,6 +6,8 @@ applying calibration corrections, and unit conversions.
 """
 
 from .fits_loader import (
+    load_calibration_data,
+    load_prepared_spectrum_data,
     load_filtercal,
     load_state_file,
     get_filter_centers,
@@ -38,6 +40,8 @@ from .paths import (
 )
 
 __all__ = [
+    'load_calibration_data',
+    'load_prepared_spectrum_data',
     'load_filtercal',
     'load_state_file',
     'get_filter_centers',

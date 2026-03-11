@@ -1,8 +1,15 @@
+# Configuration defaults
+DEFAULT_DATA_DIR = "/media/peterson/INDURANCE/Data"
+DEFAULT_REFRESH_INTERVAL = 3000  # milliseconds (3 seconds)
+
+# Calibration alignment defaults
+DEFAULT_ALIGN_FREQ_MIN = 50  # MHz
+DEFAULT_ALIGN_FREQ_MAX = 80  # MHz
+
 """Path resolution helpers for runtime data assets."""
 
 from pathlib import Path
 import os
-
 
 def get_default_s21_dir():
     """Return the default S21 directory with environment override support.
@@ -20,3 +27,5 @@ def get_default_s21_dir():
 
     repo_s21_dir = Path(__file__).resolve().parents[3] / "characterization" / "s_parameters"
     return str(repo_s21_dir)
+
+DEFAULT_S21_DIR = get_default_s21_dir()

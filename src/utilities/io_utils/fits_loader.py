@@ -662,13 +662,6 @@ class FBFileLoader:
         
         logger.info("Loading state %d from %d cycles...", state_no, len(cycle_dirs))
        
-        # Load calibration settings based on toggles
-        calib_toggles = []
-        if apply_s21:
-            calib_toggles.append('s21')
-        if apply_alignment:
-            calib_toggles.append('alignment') 
-
         # Process each cycle
         cycle_iterator = tqdm(
             enumerate(cycle_dirs),
@@ -699,100 +692,117 @@ class FBFileLoader:
                 )
                 continue
             
-            # Load state file to determine number of spectra
+            # Open each FITS file once per cycle and process all table rows.
             try:
-                state_metadata = load_state_file(state_file, spectrum_index=0)
-                n_spectra = state_metadata['n_spectra']
-                logger.debug("Cycle %s: processing %d spectra", cycle_name, n_spectra)
+                with fits.open(state_file) as hdul:
+                    primary_hdr = hdul[0].header
+                    table = hdul[1].data
+
+                    if table is None:
+                        logger.warning("No table data found in %s", state_file)
+                        continue
+
+                    n_lo_pts = primary_hdr.get('N_LO_PTS', 0)
+                    n_filters = primary_hdr.get('N_FILTERS', 21)
+                    n_spectra = primary_hdr.get('N_SPECTRA', len(table))
+                    n_spectra = min(n_spectra, len(table))
+
+                    logger.debug("Cycle %s: processing %d spectra", cycle_name, n_spectra)
+
+                    for spec_idx in range(n_spectra):
+                        try:
+                            row = table[spec_idx]
+
+                            lo_frequencies = row['LO_FREQUENCIES']
+                            data_cube_flat = row['DATA_CUBE']
+                            spectrum_timestamp = row['SPECTRUM_TIMESTAMP']
+
+                            expected_size = n_lo_pts * n_filters
+                            if len(data_cube_flat) != expected_size:
+                                logger.warning(
+                                    "DATA_CUBE size mismatch in %s spectrum %d: got %d, expected %d",
+                                    state_file,
+                                    spec_idx,
+                                    len(data_cube_flat),
+                                    expected_size,
+                                )
+                                continue
+
+                            spectrum_data_2d = data_cube_flat.reshape(n_lo_pts, n_filters)
+
+                            timestamp = self._parse_timestamp(spectrum_timestamp, day_name)
+                            if timestamp is None:
+                                logger.warning(
+                                    "Invalid timestamp in %s spectrum %d, skipping",
+                                    state_file,
+                                    spec_idx,
+                                )
+                                continue
+
+                            result = io_utils.apply_calibration_to_spectrum(
+                                spectrum_data_2d,
+                                lo_frequencies,
+                                filter_cal if filter_cal else {},
+                                return_voltages=False,
+                            )
+                            frequencies, powers, filter_indices = result
+
+                            if apply_alignment and filter_cal:
+                                normalization = io_utils.calculate_filter_normalization(
+                                    frequencies,
+                                    powers,
+                                    filter_indices,
+                                    freq_min=align_freq_min,
+                                    freq_max=align_freq_max,
+                                    excluded_filters=excluded_filters,
+                                )
+
+                                if normalization:
+                                    powers_normalized = []
+                                    for power, filt in zip(powers, filter_indices):
+                                        if filt in normalization:
+                                            powers_normalized.append(power + normalization[filt])
+                                        else:
+                                            powers_normalized.append(power)
+                                    powers = np.array(powers_normalized)
+
+                            merged_freq, merged_power = self._merge_filters_to_spectrum(
+                                frequencies, powers, filter_indices
+                            )
+
+                            if reference_frequencies is None:
+                                reference_frequencies = merged_freq
+                                logger.info(
+                                    "Reference frequency range: %.2f - %.2f MHz (%d points)",
+                                    merged_freq.min(),
+                                    merged_freq.max(),
+                                    len(merged_freq),
+                                )
+
+                            if not np.array_equal(merged_freq, reference_frequencies):
+                                logger.warning(
+                                    "Frequency mismatch in %s spectrum %d (expected %d points, got %d)",
+                                    cycle_name,
+                                    spec_idx,
+                                    len(reference_frequencies),
+                                    len(merged_freq),
+                                )
+                                continue
+
+                            all_timestamps.append(timestamp)
+                            all_merged_spectra.append(merged_power)
+                            all_cycle_ids.append(cycle_name)
+
+                        except Exception:
+                            logger.exception(
+                                "Failed to process %s spectrum %d",
+                                state_file,
+                                spec_idx,
+                            )
+                            continue
             except Exception:
                 logger.exception("Failed to read state file metadata: %s", state_file)
                 continue
-            
-            # Process each spectrum in this state file
-            for spec_idx in range(n_spectra):
-                try:
-                    # Load one spectrum
-                    spectrum_data = load_state_file(state_file, spectrum_index=spec_idx)
-                    
-                    # Parse timestamp
-                    timestamp = self._parse_timestamp(spectrum_data['timestamp'], day_name)
-                    if timestamp is None:
-                        logger.warning(
-                            "Invalid timestamp in %s spectrum %d, skipping",
-                            state_file,
-                            spec_idx
-                        )
-                        continue
-                    
-                    # Apply calibration to get frequencies and powers
-                    result = io_utils.apply_calibration_to_spectrum(
-                        spectrum_data['data'],
-                        spectrum_data['lo_frequencies'],
-                        filter_cal if filter_cal else {},
-                        return_voltages=False,
-                    )
-                    frequencies, powers, filter_indices = result
-                    
-                    # Apply alignment normalization if requested
-                    if apply_alignment and filter_cal:
-                        normalization = io_utils.calculate_filter_normalization(
-                            frequencies,
-                            powers,
-                            filter_indices,
-                            freq_min=align_freq_min,
-                            freq_max=align_freq_max,
-                            excluded_filters=excluded_filters,
-                        )
-                        
-                        if normalization:
-                            powers_normalized = []
-                            for power, filt in zip(powers, filter_indices):
-                                if filt in normalization:
-                                    powers_normalized.append(power + normalization[filt])
-                                else:
-                                    powers_normalized.append(power)
-                            powers = np.array(powers_normalized)
-                    
-                    # Merge 21 filters into single spectrum
-                    merged_freq, merged_power = self._merge_filters_to_spectrum(
-                        frequencies, powers, filter_indices
-                    )
-                    
-                    # Set reference frequency array from first valid spectrum
-                    if reference_frequencies is None:
-                        reference_frequencies = merged_freq
-                        logger.info(
-                            "Reference frequency range: %.2f - %.2f MHz (%d points)",
-                            merged_freq.min(),
-                            merged_freq.max(),
-                            len(merged_freq)
-                        )
-                    
-                    # Verify frequency consistency
-                    if not np.array_equal(merged_freq, reference_frequencies):
-                        logger.warning(
-                            "Frequency mismatch in %s spectrum %d (expected %d points, got %d)",
-                            cycle_name,
-                            spec_idx,
-                            len(reference_frequencies),
-                            len(merged_freq)
-                        )
-                        # Try to interpolate or skip this spectrum
-                        # For now, skip spectra with mismatched frequencies
-                        continue
-                    
-                    # Store this spectrum
-                    all_timestamps.append(timestamp)
-                    all_merged_spectra.append(merged_power)
-                    all_cycle_ids.append(cycle_name)
-                    
-                except Exception:
-                    logger.exception(
-                        "Failed to process %s spectrum %d",
-                        state_file,
-                        spec_idx
-                    )
-                    continue
             
             if (cycle_idx + 1) % 10 == 0:
                 logger.info("Processed %d/%d cycles...", cycle_idx + 1, len(cycle_dirs))
@@ -835,16 +845,10 @@ class FBFileLoader:
         
         return timestamps, reference_frequencies, powers_2d, cycle_ids
 
-    def save(self,
-             output_path,
-             state_no,
-             apply_s21=True,
-             apply_alignment=True,
-             align_freq_min=50,
-             align_freq_max=80,
-             excluded_filters=None,
-             s21_dir=DEFAULT_S21_DIR,
-             overwrite=False):
+    def save(self, output_path, state_no,
+        apply_s21=True, apply_alignment=True, align_freq_min=50,
+        align_freq_max=80, excluded_filters=None, s21_dir=DEFAULT_S21_DIR,
+        overwrite=False):
         """Run ``load()`` and save results to a compressed NPZ archive.
 
         Parameters
@@ -930,5 +934,80 @@ class FBFileLoader:
         logger.info("Saved load() results to %s", output_path)
         logger.info("Saved metadata to %s", metadata_path)
 
-        return output_path
+        return timestamps, frequencies, powers, cycle_ids
+
+    @staticmethod
+    def load_from_npz(npz_path, parse_timestamps=True, load_metadata=True):
+        """Load NPZ output produced by ``FBFileLoader.save()``.
+
+        Parameters
+        ----------
+        npz_path : str or Path
+            Path to NPZ archive written by ``save()``.
+        parse_timestamps : bool, optional
+            If True, parse ISO strings to datetime objects when possible.
+        load_metadata : bool, optional
+            If True, load ``<npz_stem>_metadata.json`` if present.
+
+        Returns
+        -------
+        dict
+            Keys: ``timestamps``, ``frequencies``, ``powers``, ``cycle_ids``,
+            ``metadata``, ``npz_path``.
+        """
+        npz_path = Path(npz_path)
+        if npz_path.suffix.lower() != ".npz":
+            npz_path = npz_path.with_suffix(".npz")
+
+        if not npz_path.exists():
+            raise FileNotFoundError(f"NPZ file not found: {npz_path}")
+
+        with np.load(npz_path, allow_pickle=False) as data:
+            required = {"timestamps", "frequencies", "powers", "cycle_ids"}
+            missing = required - set(data.files)
+            if missing:
+                raise KeyError(
+                    f"Missing required keys in {npz_path.name}: {sorted(missing)}"
+                )
+
+            timestamps = data["timestamps"]
+            frequencies = data["frequencies"]
+            powers = data["powers"]
+            cycle_ids = data["cycle_ids"]
+
+        if parse_timestamps:
+            from datetime import datetime
+
+            parsed = []
+            for ts in timestamps:
+                ts_str = ts.decode("utf-8") if isinstance(ts, bytes) else str(ts)
+                try:
+                    parsed.append(datetime.fromisoformat(ts_str))
+                except ValueError:
+                    parsed.append(ts_str)
+            timestamps = np.array(parsed, dtype=object)
+
+        metadata = None
+        if load_metadata:
+            metadata_path = npz_path.with_name(f"{npz_path.stem}_metadata.json")
+            if metadata_path.exists():
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+
+        logger.info(
+            "Loaded NPZ: %s (timestamps=%s, frequencies=%s, powers=%s)",
+            npz_path,
+            timestamps.shape,
+            frequencies.shape,
+            powers.shape,
+        )
+
+        return {
+            "timestamps": timestamps,
+            "frequencies": frequencies,
+            "powers": powers,
+            "cycle_ids": cycle_ids,
+            "metadata": metadata,
+            "npz_path": npz_path,
+        }
     

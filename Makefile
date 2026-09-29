@@ -102,7 +102,8 @@ lo_frequency: $(BIN_DIR) $(LO_FREQ_TARGET)
 # Clean compiled binaries
 clean:
 	@echo "Cleaning up..."
-	@rm -f $(CALIB_TARGET) $(ACQ_TARGET) $(MANUAL_STATE_TARGET) $(CYCLE_CTRL_TARGET) $(LO_FREQ_TARGET)	@if [ -d $(BIN_DIR) ] && [ -z "$$(ls -A $(BIN_DIR))" ]; then \
+	@rm -f $(CALIB_TARGET) $(ACQ_TARGET) $(MANUAL_STATE_TARGET) $(CYCLE_CTRL_TARGET) $(LO_FREQ_TARGET)	
+	@if [ -d $(BIN_DIR) ] && [ -z "$$(ls -A $(BIN_DIR))" ]; then \
 		rm -rf $(BIN_DIR); \
 		echo "✓ Removed empty bin directory"; \
 	fi

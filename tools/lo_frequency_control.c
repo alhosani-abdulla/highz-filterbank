@@ -12,6 +12,16 @@
 #define FREQ_MAX   ACQ_FREQ_MAX
 #define FREQ_STEP  ACQ_FREQ_STEP
 
+/*
+ * Give the Arduino enough time to process each LO change.
+ * continuous_acq naturally has a measurement between pulses;
+ * this standalone program does not.
+ */
+#define ARDUINO_STEP_DELAY_US  50000   // 50 ms between frequency steps
+#define RESET_LOW_US           10000   // 10 ms reset pulse
+#define RESET_SETTLE_US        50000   // 50 ms after reset
+#define POWER_SETTLE_US       100000   // 100 ms after power-on
+
 static volatile sig_atomic_t keep_running = 1;
 
 
@@ -28,13 +38,27 @@ static void handle_signal(int sig)
 /*---------------------------------------------------------
  * Send one LOW -> HIGH pulse to an Arduino control pin
  *---------------------------------------------------------*/
-static void pulse_gpio(unsigned gpio)
+static void increment_lo_once(void)
 {
-    gpioWrite(gpio, 0);
+    /*
+     * Arduino programs the LO on the rising edge:
+     *
+     * HIGH -> LOW
+     * wait
+     * LOW -> HIGH  <-- Arduino reacts here
+     */
+
+    gpioWrite(ACQ_GPIO_FREQ_INCREMENT, 0);
     gpioDelay(DEFAULT_PULSE_LOW_US);
 
-    gpioWrite(gpio, 1);
-    gpioDelay(DEFAULT_LO_SETTLE_US);
+    gpioWrite(ACQ_GPIO_FREQ_INCREMENT, 1);
+
+    /*
+     * IMPORTANT:
+     * Give Arduino time to program the LO before
+     * sending another increment.
+     */
+    gpioDelay(ARDUINO_STEP_DELAY_US);
 }
 
 
@@ -52,13 +76,17 @@ static int initialize_lo_gpio(void)
     gpioSetMode(ACQ_GPIO_FREQ_RESET, PI_OUTPUT);
     gpioSetMode(ACQ_GPIO_LO_POWER, PI_OUTPUT);
 
-    /* Increment and reset pins idle HIGH */
+    /* Control pins idle HIGH */
     gpioWrite(ACQ_GPIO_FREQ_INCREMENT, 1);
     gpioWrite(ACQ_GPIO_FREQ_RESET, 1);
 
     /* Turn LO board ON */
     gpioWrite(ACQ_GPIO_LO_POWER, 1);
-    gpioDelay(DEFAULT_LO_SETTLE_US);
+
+    printf("LO board powered ON.\n");
+
+    /* Give hardware time to power up */
+    gpioDelay(POWER_SETTLE_US);
 
     return 0;
 }
@@ -69,15 +97,49 @@ static int initialize_lo_gpio(void)
  *---------------------------------------------------------*/
 static void shutdown_lo(void)
 {
+    printf("\nShutting down LO...\n");
+
+    /*
+     * Make sure frequency increment is sitting
+     * in its normal idle HIGH state.
+     */
     gpioWrite(ACQ_GPIO_FREQ_INCREMENT, 1);
-    gpioWrite(ACQ_GPIO_FREQ_RESET, 1);
 
-    /* Power OFF */
+
+    /*
+     * Reset the Arduino frequency controller.
+     *
+     * Use two reset pulses because the existing
+     * filterSweep.c code uses two pulses for a
+     * reliable reset back to the initial state.
+     */
+    for (int i = 0; i < 2; i++) {
+
+        gpioWrite(ACQ_GPIO_FREQ_RESET, 0);
+        gpioDelay(10000);  // LOW for 10 ms
+
+        gpioWrite(ACQ_GPIO_FREQ_RESET, 1);
+        gpioDelay(5000);   // wait 5 ms
+    }
+
+    printf("Frequency controller reset.\n");
+
+
+    /*
+     * Turn the LO board OFF.
+     */
     gpioWrite(ACQ_GPIO_LO_POWER, 0);
+    gpioDelay(5000);
 
-    gpioDelay(DEFAULT_LO_SETTLE_US);
+    printf("LO power OFF.\n");
 
+
+    /*
+     * Release Raspberry Pi GPIO resources.
+     */
     gpioTerminate();
+
+    printf("GPIO released.\n");
 }
 
 
@@ -86,7 +148,14 @@ static void shutdown_lo(void)
  *---------------------------------------------------------*/
 static void reset_lo_frequency(void)
 {
-    pulse_gpio(ACQ_GPIO_FREQ_RESET);
+    printf("Resetting frequency counter to %.1f MHz...\n",
+           FREQ_MIN);
+
+    gpioWrite(ACQ_GPIO_FREQ_RESET, 0);
+    gpioDelay(RESET_LOW_US);
+
+    gpioWrite(ACQ_GPIO_FREQ_RESET, 1);
+    gpioDelay(RESET_SETTLE_US);
 }
 
 
@@ -183,7 +252,12 @@ static int set_lo_frequency(double target_mhz)
     /* Send increment pulses */
     for (long i = 0; i < pulses; i++) {
 
-        pulse_gpio(ACQ_GPIO_FREQ_INCREMENT);
+        if (!keep_running) {
+            printf("\nFrequency change interrupted.\n");
+            return -1;
+        }
+
+        increment_lo_once();
     }
 
 
@@ -235,9 +309,6 @@ int main(int argc, char *argv[])
     }
 
 
-    /* Allow Ctrl+C to shut down cleanly */
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
 
 
     /* Initialize GPIO and turn LO on */
@@ -245,6 +316,14 @@ int main(int argc, char *argv[])
 
         return 1;
     }
+
+    /*
+    * Install our signal handlers AFTER gpioInitialise().
+    * pigpio installs its own signal handler during initialization,
+    * so ours needs to be installed afterward.
+    */
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
 
 
     /* Move to requested frequency */

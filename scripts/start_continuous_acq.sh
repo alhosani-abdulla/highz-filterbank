@@ -90,7 +90,7 @@ if [[ -f "$PID_FILE" ]]; then
         exit 1
     else
         echo "Stale PID file found, removing..."
-        rm -f "$PID_FILE"
+        sudo rm -f "$PID_FILE"
     fi
 fi
 

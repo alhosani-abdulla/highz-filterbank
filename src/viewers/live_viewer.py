@@ -67,8 +67,8 @@ app.layout = html.Div([
         html.H1("High-Z Filterbank Live Viewer", 
                 style={'textAlign': 'center', 'color': '#2c3e50', 'marginBottom': '10px'}),
         html.Div([
-            html.Span(id='status-info', style={'fontSize': '14px', 'color': '#27ae60', 'marginRight': '20px'}),
-            html.Span(id='last-update', style={'fontSize': '12px', 'color': '#7f8c8d'}),
+            html.Span(id='status-info', style={'fontSize': '18px', 'color': '#27ae60', 'marginRight': '20px'}),
+            html.Span(id='last-update', style={'fontSize': '16px', 'color': '#7f8c8d'}),
         ], style={'textAlign': 'center'}),
     ], style={'marginBottom': '15px'}),
     

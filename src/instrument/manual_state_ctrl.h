@@ -14,7 +14,7 @@
 #include <pigpio.h>   // Raspberry Pi GPIO control
 
 // GPIO Pin Configuration
-const int BIT_0 = 21;
+const int BIT_0 = 20;
 const int BIT_1 = 24;
 const int BIT_2 = 27;
 

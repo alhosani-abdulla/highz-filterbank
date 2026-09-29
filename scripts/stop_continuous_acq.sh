@@ -34,7 +34,7 @@ PID=$(cat "$PID_FILE")
 # Check if process is actually running
 if ! sudo ps -p "$PID" > /dev/null 2>&1; then
     echo "Process $PID is not running (stale PID file)"
-    rm -f "$PID_FILE"
+    sudo rm -f "$PID_FILE"
     echo "Cleaned up stale PID file."
     exit 0
 fi
@@ -54,7 +54,7 @@ echo "Waiting for process to terminate..."
 for i in {1..30}; do
     if ! sudo ps -p "$PID" > /dev/null 2>&1; then
         echo "✓ Process terminated cleanly"
-        rm -f "$PID_FILE"
+        sudo rm -f "$PID_FILE"
         echo "✓ Removed PID file"
         echo ""
         echo "Cycle controller stopped successfully."
@@ -76,7 +76,7 @@ if sudo ps -p "$PID" > /dev/null 2>&1; then
     exit 1
 else
     echo "✓ Process forcefully terminated"
-    rm -f "$PID_FILE"
+    sudo rm -f "$PID_FILE"
     echo "✓ Removed PID file"
     echo ""
     echo "Cycle controller stopped (forced)."

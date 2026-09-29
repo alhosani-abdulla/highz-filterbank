@@ -175,7 +175,7 @@ def create_power_plot(frequencies, powers, filter_indices,
             marker=dict(size=3, color=colors[filt_num]),
             name=f'Filter {display_num}',
             showlegend=False,
-            hovertemplate=f'F{display_num}: %{{y:.1f}}dBm @ %{{x:.0f}}MHz<extra></extra>' if not fast_mode else None,
+            hovertemplate=f'F{display_num}: %{{y:.1f}}dBm @ %{{x:.1f}}MHz<extra></extra>' if not fast_mode else None,
             hoverinfo='skip' if fast_mode else None
         ))
     
@@ -185,7 +185,7 @@ def create_power_plot(frequencies, powers, filter_indices,
         title=title,
         xaxis_title="Frequency (MHz)",
         yaxis_title="Power (dBm)",
-        yaxis_range=[-70, 10],
+        yaxis_range=[-70, 5],
         xaxis_range=[-50, 350],
         template="plotly_white",
         hovermode=False if fast_mode else 'closest',

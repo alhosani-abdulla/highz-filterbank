@@ -277,6 +277,9 @@ int main(int argc, char *argv[])
     char *endptr = NULL;
     double target_mhz;
 
+    char input[100];
+    double new_frequency;
+
 
     /* User must provide one frequency */
     if (argc != 2) {
@@ -337,17 +340,64 @@ int main(int argc, char *argv[])
 
     printf("\n");
     printf("LO power is ON.\n");
-    printf("Frequency will remain fixed.\n");
-    printf("Press Ctrl+C when finished.\n");
+    printf("You can now change the frequency without restarting the program.\n");
+    printf("Press Ctrl+C when completely finished.\n");
 
 
-    /*
-     * Nothing changes while we sit here.
-     * LO remains powered and at the selected frequency.
-     */
     while (keep_running) {
 
-        sleep(1);
+        printf("\nEnter new frequency in MHz: ");
+        fflush(stdout);
+
+
+        /*
+        * Read the next frequency from the user.
+        */
+        if (fgets(input, sizeof(input), stdin) == NULL) {
+
+            /*
+            * Ctrl+C may interrupt keyboard input.
+            */
+            if (!keep_running) {
+                break;
+            }
+
+            continue;
+        }
+
+
+        /*
+        * Convert keyboard input into a number.
+        */
+        char *new_endptr = NULL;
+
+        new_frequency = strtod(input, &new_endptr);
+
+
+        /*
+        * Make sure the user actually entered a number.
+        */
+        if (new_endptr == input) {
+
+            printf("Invalid input. Enter a frequency such as 700 or 900.\n");
+
+            continue;
+        }
+
+
+        /*
+        * Move LO to the newly requested frequency.
+        */
+        if (set_lo_frequency(new_frequency) != 0) {
+
+            printf("Frequency was not changed.\n");
+
+            continue;
+        }
+
+
+        printf("\nLO is now set to %.1f MHz.\n",
+            new_frequency);
     }
 
 

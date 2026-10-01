@@ -19,10 +19,11 @@ import plotly.graph_objs as go
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utilities import io_utils, plot_utils
+from utilities.io_utils.paths import get_default_s21_dir
 
 # Configuration defaults
 DEFAULT_DATA_DIR = "/media/peterson/INDURANCE/Data"
-DEFAULT_S21_DIR = "/home/peterson/highz/highz-filterbank/characterization/s_parameters"
+DEFAULT_S21_DIR = get_default_s21_dir()
 
 # Calibration alignment defaults
 DEFAULT_ALIGN_FREQ_MIN = 50  # MHz

@@ -9,9 +9,11 @@ matplotlib = "*"
 astropy = "*"
 dash = "*"
 plotly = "*"
+tqdm = "*"
 scikit-rf = "*"
 jupyter = "*"
 ipykernel = "*"
+highz-filterbank = {file = ".", editable = true}
 
 [dev-packages]
 

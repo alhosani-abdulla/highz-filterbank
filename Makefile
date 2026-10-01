@@ -38,14 +38,14 @@ CALIB_TARGET = $(BIN_DIR)/calib
 ACQ_TARGET = $(BIN_DIR)/acq
 MANUAL_STATE_TARGET = $(BIN_DIR)/state_manual
 CYCLE_CTRL_TARGET = $(BIN_DIR)/cycle_control
+LO_FREQ_TARGET = $(BIN_DIR)/lo_frequency
 
 # ============================================================================
 # Build Rules
 # ============================================================================
 
 # Default target - build everything
-all: $(BIN_DIR) $(CALIB_TARGET) $(ACQ_TARGET) $(MANUAL_STATE_TARGET) $(CYCLE_CTRL_TARGET)
-
+all: $(BIN_DIR) $(CALIB_TARGET) $(ACQ_TARGET) $(MANUAL_STATE_TARGET) $(CYCLE_CTRL_TARGET) $(LO_FREQ_TARGET)
 # Create bin directory if it doesn't exist
 $(BIN_DIR):
 	@mkdir -p $(BIN_DIR)
@@ -69,6 +69,12 @@ $(MANUAL_STATE_TARGET): $(SRC_INSTRUMENT)/manual_state_ctrl.c
 	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 	@echo "✓ Manual state control binary created: $(MANUAL_STATE_TARGET)"
 
+# Manual local oscillator frequency controller
+$(LO_FREQ_TARGET): tools/lo_frequency_control.c
+	@echo "Compiling LO frequency controller..."
+	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
+	@echo "✓ LO frequency controller created: $(LO_FREQ_TARGET)"
+
 # Automated cycle controller
 $(CYCLE_CTRL_TARGET): $(SRC_INSTRUMENT)/cycle_control.c
 	@echo "Compiling automated cycle controller..."
@@ -91,10 +97,12 @@ state_manual: $(BIN_DIR) $(MANUAL_STATE_TARGET)
 # Build only cycle controller
 cycle_control: $(BIN_DIR) $(CYCLE_CTRL_TARGET)
 
+lo_frequency: $(BIN_DIR) $(LO_FREQ_TARGET)
+
 # Clean compiled binaries
 clean:
 	@echo "Cleaning up..."
-	@rm -f $(CALIB_TARGET) $(ACQ_TARGET) $(MANUAL_STATE_TARGET) $(CYCLE_CTRL_TARGET)
+	@rm -f $(CALIB_TARGET) $(ACQ_TARGET) $(MANUAL_STATE_TARGET) $(CYCLE_CTRL_TARGET) $(LO_FREQ_TARGET)	
 	@if [ -d $(BIN_DIR) ] && [ -z "$$(ls -A $(BIN_DIR))" ]; then \
 		rm -rf $(BIN_DIR); \
 		echo "✓ Removed empty bin directory"; \
@@ -134,4 +142,4 @@ help:
 # Phony Targets (not actual files)
 # ============================================================================
 
-.PHONY: all calib acq state_manual cycle_control clean rebuild help
+.PHONY: all calib acq state_manual cycle_control lo_frequency clean rebuild help

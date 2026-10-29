@@ -1,411 +1,345 @@
+/*
+ * Interactive controller for the High-Z filterbank's two local oscillators.
+ *
+ * Mixer LO: GPIO 4 (increment), 5 (reset), 6 (power)
+ * Tone  LO: GPIO 13 (increment), 19 (reset), 26 (power)
+ *
+ * IMPORTANT: Tone frequency values below come from highz_common.h's
+ * CALIB_* settings (900-960 MHz, 0.2 MHz increments). Confirm these
+ * match the firmware actually loaded on the SECOND Arduino before use.
+ * The second controller's edge and first-pulse behavior must also be
+ * verified against a spectrum analyzer.
+ *
+ * Only one program should own/control these GPIOs at a time.
+ */
+#include <errno.h>
+#include <math.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <signal.h>
-#include <math.h>
+#include <string.h>
 #include <unistd.h>
 #include <pigpio.h>
 
 #include "../src/instrument/highz_common.h"
 
-/* Use the same LO settings as continuous_acq.c */
-#define FREQ_MIN   ACQ_FREQ_MIN
-#define FREQ_MAX   ACQ_FREQ_MAX
-#define FREQ_STEP  ACQ_FREQ_STEP
-
-/*
- * Give the Arduino enough time to process each LO change.
- * continuous_acq naturally has a measurement between pulses;
- * this standalone program does not.
- */
-#define ARDUINO_STEP_DELAY_US  50000   // 50 ms between frequency steps
-#define RESET_LOW_US           10000   // 10 ms reset pulse
-#define RESET_SETTLE_US        50000   // 50 ms after reset
-#define POWER_SETTLE_US       100000   // 100 ms after power-on
+#define ARDUINO_STEP_DELAY_US 50000  /* Allow Arduino 50 ms per pulse */
+#define RESET_LOW_US          10000
+#define RESET_SETTLE_US       50000
+#define POWER_SETTLE_US      100000
 
 static volatile sig_atomic_t keep_running = 1;
 
+typedef struct {
+    const char *name;
+    int increment_pin;
+    int reset_pin;
+    int power_pin;
+    double min_mhz;
+    double max_mhz;
+    double step_mhz;
+    double last_mhz;
+    int has_frequency;
+    int power_on;
+} Oscillator;
 
-/*---------------------------------------------------------
- * Ctrl+C handler
- *---------------------------------------------------------*/
+static Oscillator mixer = {
+    .name = "Mixer LO",
+    .increment_pin = ACQ_GPIO_FREQ_INCREMENT,
+    .reset_pin = ACQ_GPIO_FREQ_RESET,
+    .power_pin = ACQ_GPIO_LO_POWER,
+    .min_mhz = ACQ_FREQ_MIN,
+    .max_mhz = ACQ_FREQ_MAX,
+    .step_mhz = ACQ_FREQ_STEP
+};
+
+static Oscillator tone = {
+    .name = "Tone LO",
+    .increment_pin = CALIB_GPIO_FREQ_INCREMENT,
+    .reset_pin = CALIB_GPIO_FREQ_RESET,
+    .power_pin = CALIB_GPIO_LO_POWER,
+    .min_mhz = CALIB_FREQ_MIN,
+    .max_mhz = CALIB_FREQ_MAX,
+    .step_mhz = CALIB_FREQ_STEP
+};
+
 static void handle_signal(int sig)
 {
     (void)sig;
     keep_running = 0;
 }
 
-
-/*---------------------------------------------------------
- * Send one LOW -> HIGH pulse to an Arduino control pin
- *---------------------------------------------------------*/
-static void increment_lo_once(void)
+static int write_pin(int pin, int level)
 {
-    /*
-     * Arduino programs the LO on the rising edge:
-     *
-     * HIGH -> LOW
-     * wait
-     * LOW -> HIGH  <-- Arduino reacts here
-     */
-
-    gpioWrite(ACQ_GPIO_FREQ_INCREMENT, 0);
-    gpioDelay(DEFAULT_PULSE_LOW_US);
-
-    gpioWrite(ACQ_GPIO_FREQ_INCREMENT, 1);
-
-    /*
-     * IMPORTANT:
-     * Give Arduino time to program the LO before
-     * sending another increment.
-     */
-    gpioDelay(ARDUINO_STEP_DELAY_US);
+    int rc = gpioWrite(pin, level);
+    if (rc != 0) {
+        fprintf(stderr, "GPIO %d write failed (pigpio code %d).\n", pin, rc);
+        return -1;
+    }
+    return 0;
 }
 
+/* Reject junk such as 700abc, NaN, or 700 800. */
+static int parse_mhz(const char *value, double *mhz)
+{
+    char *end = NULL;
+    errno = 0;
+    double result = strtod(value, &end);
+    if (value == end || *end != '\0' || errno == ERANGE || !isfinite(result)) {
+        return -1;
+    }
+    *mhz = result;
+    return 0;
+}
 
-/*---------------------------------------------------------
- * Initialize Raspberry Pi GPIO pins
- *---------------------------------------------------------*/
-static int initialize_lo_gpio(void)
+/* Validate before touching hardware. Returns pulse-grid step count. */
+static int frequency_steps(const Oscillator *lo, double target, long *steps)
+{
+    if (!isfinite(target) || target < lo->min_mhz - 1e-6 ||
+        target > lo->max_mhz + 1e-6) {
+        fprintf(stderr, "%s: frequency must be %.1f to %.1f MHz.\n",
+                lo->name, lo->min_mhz, lo->max_mhz);
+        return -1;
+    }
+
+    double raw_steps = (target - lo->min_mhz) / lo->step_mhz;
+    long count = lround(raw_steps);
+    double nearest = lo->min_mhz + count * lo->step_mhz;
+    if (fabs(target - nearest) > 1e-5) {
+        fprintf(stderr, "%s: use %.1f MHz steps (starting at %.1f).\n",
+                lo->name, lo->step_mhz, lo->min_mhz);
+        return -1;
+    }
+    *steps = count;
+    return 0;
+}
+
+static int initialize_gpio(void)
 {
     if (gpioInitialise() < 0) {
         fprintf(stderr, "Error: failed to initialize pigpio.\n");
         return -1;
     }
-
-    gpioSetMode(ACQ_GPIO_FREQ_INCREMENT, PI_OUTPUT);
-    gpioSetMode(ACQ_GPIO_FREQ_RESET, PI_OUTPUT);
-    gpioSetMode(ACQ_GPIO_LO_POWER, PI_OUTPUT);
-
-    /* Control pins idle HIGH */
-    gpioWrite(ACQ_GPIO_FREQ_INCREMENT, 1);
-    gpioWrite(ACQ_GPIO_FREQ_RESET, 1);
-
-    /* Turn LO board ON */
-    gpioWrite(ACQ_GPIO_LO_POWER, 1);
-
-    printf("LO board powered ON.\n");
-
-    /* Give hardware time to power up */
-    gpioDelay(POWER_SETTLE_US);
-
-    return 0;
-}
-
-
-/*---------------------------------------------------------
- * Turn LO board off and release GPIO
- *---------------------------------------------------------*/
-static void shutdown_lo(void)
-{
-    printf("\nShutting down LO...\n");
-
-    /*
-     * Make sure frequency increment is sitting
-     * in its normal idle HIGH state.
-     */
-    gpioWrite(ACQ_GPIO_FREQ_INCREMENT, 1);
-
-
-    /*
-     * Reset the Arduino frequency controller.
-     *
-     * Use two reset pulses because the existing
-     * filterSweep.c code uses two pulses for a
-     * reliable reset back to the initial state.
-     */
-    for (int i = 0; i < 2; i++) {
-
-        gpioWrite(ACQ_GPIO_FREQ_RESET, 0);
-        gpioDelay(10000);  // LOW for 10 ms
-
-        gpioWrite(ACQ_GPIO_FREQ_RESET, 1);
-        gpioDelay(5000);   // wait 5 ms
-    }
-
-    printf("Frequency controller reset.\n");
-
-
-    /*
-     * Turn the LO board OFF.
-     */
-    gpioWrite(ACQ_GPIO_LO_POWER, 0);
-    gpioDelay(5000);
-
-    printf("LO power OFF.\n");
-
-
-    /*
-     * Release Raspberry Pi GPIO resources.
-     */
-    gpioTerminate();
-
-    printf("GPIO released.\n");
-}
-
-
-/*---------------------------------------------------------
- * Reset Arduino frequency counter to 650 MHz
- *---------------------------------------------------------*/
-static void reset_lo_frequency(void)
-{
-    printf("Resetting frequency counter to %.1f MHz...\n",
-           FREQ_MIN);
-
-    gpioWrite(ACQ_GPIO_FREQ_RESET, 0);
-    gpioDelay(RESET_LOW_US);
-
-    gpioWrite(ACQ_GPIO_FREQ_RESET, 1);
-    gpioDelay(RESET_SETTLE_US);
-}
-
-
-/*---------------------------------------------------------
- * Move LO to requested frequency
- *---------------------------------------------------------*/
-static int set_lo_frequency(double target_mhz)
-{
-    double raw_steps;
-    long steps_from_min;
-    double valid_frequency;
-    long pulses;
-
-    /*
-     * Determine how many 2 MHz steps the target is
-     * above 650 MHz.
-     */
-    raw_steps = (target_mhz - FREQ_MIN) / FREQ_STEP;
-
-    steps_from_min = lround(raw_steps);
-
-    valid_frequency =
-        FREQ_MIN + steps_from_min * FREQ_STEP;
-
-
-    /* Check frequency range */
-    if (target_mhz < FREQ_MIN ||
-        target_mhz > FREQ_MAX) {
-
-        fprintf(stderr,
-                "Error: frequency must be between %.1f and %.1f MHz.\n",
-                FREQ_MIN,
-                FREQ_MAX);
-
-        return -1;
-    }
-
-
-    /* Check that frequency lies on the 2 MHz grid */
-    if (fabs(target_mhz - valid_frequency) > 1e-6) {
-
-        fprintf(stderr,
-                "Error: frequency must use %.1f MHz steps.\n",
-                FREQ_STEP);
-
-        fprintf(stderr,
-                "Examples: 650, 652, 654, 656, ...\n");
-
-        return -1;
-    }
-
-
-    /*
-     * First reset Arduino's internal frequency
-     * counter back to 650 MHz.
-     */
-    reset_lo_frequency();
-
-    sleep(1);
-
-
-    /*
-     * IMPORTANT:
-     *
-     * Reset sets Arduino curFreq = 650 MHz,
-     * but does NOT program the actual LO yet.
-     *
-     * First increment pulse programs 650 MHz.
-     *
-     * Therefore:
-     *
-     * pulses = number of steps + 1
-     */
-    pulses = steps_from_min + 1;
-
-
-    printf("\n");
-    printf("LO Frequency Controller\n");
-    printf("-----------------------\n");
-
-    printf("Starting frequency: %.1f MHz\n",
-           FREQ_MIN);
-
-    printf("Requested frequency: %.1f MHz\n",
-           target_mhz);
-
-    printf("Steps above minimum: %ld\n",
-           steps_from_min);
-
-    printf("Sending %ld increment pulses...\n",
-           pulses);
-
-
-    /* Send increment pulses */
-    for (long i = 0; i < pulses; i++) {
-
-        if (!keep_running) {
-            printf("\nFrequency change interrupted.\n");
+    Oscillator *los[] = {&mixer, &tone};
+    for (size_t i = 0; i < 2; ++i) {
+        Oscillator *lo = los[i];
+        if (gpioSetMode(lo->power_pin, PI_OUTPUT) != 0 ||
+            gpioSetMode(lo->increment_pin, PI_OUTPUT) != 0 ||
+            gpioSetMode(lo->reset_pin, PI_OUTPUT) != 0 ||
+            write_pin(lo->power_pin, 0) != 0 ||
+            write_pin(lo->increment_pin, 1) != 0 ||
+            write_pin(lo->reset_pin, 1) != 0) {
+            fprintf(stderr, "Error: could not initialize %s GPIO.\n", lo->name);
+            /* Make a best effort to turn both outputs off. */
+            gpioWrite(mixer.power_pin, 0);
+            gpioWrite(tone.power_pin, 0);
+            gpioTerminate();
             return -1;
         }
-
-        increment_lo_once();
     }
-
-
-    printf("\n");
-    printf("LO should now be at %.1f MHz.\n",
-           target_mhz);
-
+    gpioDelay(POWER_SETTLE_US);
     return 0;
 }
 
-
-/*---------------------------------------------------------
- * Main
- *---------------------------------------------------------*/
-int main(int argc, char *argv[])
+static int pulse_reset(Oscillator *lo)
 {
-    char *endptr = NULL;
-    double target_mhz;
+    if (write_pin(lo->reset_pin, 0) != 0) return -1;
+    gpioDelay(RESET_LOW_US);
+    if (write_pin(lo->reset_pin, 1) != 0) return -1;
+    gpioDelay(RESET_SETTLE_US);
+    return 0;
+}
 
-    char input[100];
-    double new_frequency;
+static int pulse_increment(Oscillator *lo)
+{
+    /* LOW then HIGH: first oscillator's firmware programs on rising edge. */
+    if (write_pin(lo->increment_pin, 0) != 0) return -1;
+    gpioDelay(DEFAULT_PULSE_LOW_US);
+    if (write_pin(lo->increment_pin, 1) != 0) return -1;
+    gpioDelay(ARDUINO_STEP_DELAY_US);
+    return 0;
+}
 
+static void turn_off(Oscillator *lo)
+{
+    /* Same double reset used by the original controller at shutdown. */
+    write_pin(lo->increment_pin, 1);
+    for (int i = 0; i < 2; ++i) {
+        write_pin(lo->reset_pin, 0);
+        gpioDelay(10000);
+        write_pin(lo->reset_pin, 1);
+        gpioDelay(5000);
+    }
+    write_pin(lo->power_pin, 0);
+    gpioDelay(5000);
+    lo->power_on = 0;
+    printf("%s power OFF.\n", lo->name);
+}
 
-    /* User must provide one frequency */
-    if (argc != 2) {
+static int set_frequency(Oscillator *lo, double target)
+{
+    long steps;
+    if (frequency_steps(lo, target, &steps) != 0) return -1;
 
-        fprintf(stderr,
-                "Usage: %s <frequency_MHz>\n",
-                argv[0]);
-
-        fprintf(stderr,
-                "Example: %s 900\n",
-                argv[0]);
-
-        return 1;
+    if (!lo->power_on) {
+        if (write_pin(lo->power_pin, 1) != 0) return -1;
+        lo->power_on = 1;
+        gpioDelay(POWER_SETTLE_US);
+        printf("%s powered ON.\n", lo->name);
     }
 
-
-    /* Convert command-line input to number */
-    target_mhz = strtod(argv[1], &endptr);
-
-
-    if (endptr == argv[1] ||
-        *endptr != '\0' ||
-        !isfinite(target_mhz)) {
-
-        fprintf(stderr,
-                "Error: '%s' is not a valid frequency.\n",
-                argv[1]);
-
-        return 1;
-    }
-
-
-
-
-    /* Initialize GPIO and turn LO on */
-    if (initialize_lo_gpio() != 0) {
-
-        return 1;
-    }
+    printf("Resetting %s frequency counter to %.1f MHz...\n",
+           lo->name, lo->min_mhz);
+    if (pulse_reset(lo) != 0) goto fail;
+    sleep(1); /* Preserve delay from the original working controller. */
 
     /*
-    * Install our signal handlers AFTER gpioInitialise().
-    * pigpio installs its own signal handler during initialization,
-    * so ours needs to be installed afterward.
-    */
+     * The original mixer Arduino: reset establishes min_mhz internally,
+     * and first increment pulse PROGRAMS min_mhz. Hence steps + 1.
+     * VERIFY this is also true for the second Arduino's firmware.
+     */
+    long pulses = steps + 1;
+    printf("%s: requested %.1f MHz; %ld steps; sending %ld pulses...\n",
+           lo->name, target, steps, pulses);
+
+    for (long i = 0; i < pulses; ++i) {
+        if (!keep_running || pulse_increment(lo) != 0) goto fail;
+    }
+    lo->last_mhz = target;
+    lo->has_frequency = 1;
+    printf("%s commanded to %.1f MHz. Verify actual RF frequency.\n",
+           lo->name, target);
+    return 0;
+
+fail:
+    fprintf(stderr, "%s: frequency change interrupted or failed.\n", lo->name);
+    lo->has_frequency = 0;
+    turn_off(lo);
+    return -1;
+}
+
+static void print_status(void)
+{
+    Oscillator *los[] = {&mixer, &tone};
+    printf("\nOscillator status (commanded, not measured):\n");
+    for (size_t i = 0; i < 2; ++i) {
+        Oscillator *lo = los[i];
+        printf("  %-9s: %s", lo->name,
+               lo->power_on ? "ON " : "OFF");
+        if (lo->has_frequency) printf(" | last target: %.1f MHz", lo->last_mhz);
+        printf("\n");
+    }
+}
+
+static void print_help(void)
+{
+    printf("\nCommands:\n"
+           "  800          Set mixer LO to 800 MHz (old behavior)\n"
+           "  mixer 800    Set mixer LO to 800 MHz\n"
+           "  tone 930     Set calibration/tone LO to 930 MHz\n"
+           "  mixer off    Switch mixer LO OFF\n"
+           "  tone off     Switch calibration/tone LO OFF\n"
+           "  mixer on     Restore last mixer target after OFF\n"
+           "  tone on      Restore last tone target after OFF\n"
+           "  status       Show both oscillator states\n"
+           "  help         Show commands\n"
+           "  quit         Power down both and exit (Ctrl+C also works)\n");
+}
+
+static void run_command(const char *line)
+{
+    char verb[32], arg[128], extra[32];
+    int n = sscanf(line, " %31s %127s %31s", verb, arg, extra);
+    if (n <= 0) return;
+
+    if (n == 1 && (!strcmp(verb, "quit") || !strcmp(verb, "exit"))) {
+        keep_running = 0;
+        return;
+    }
+    if (n == 1 && !strcmp(verb, "help")) { print_help(); return; }
+    if (n == 1 && !strcmp(verb, "status")) { print_status(); return; }
+
+    Oscillator *lo = NULL;
+    if (!strcmp(verb, "mixer") || !strcmp(verb, "lo1")) lo = &mixer;
+    if (!strcmp(verb, "tone") || !strcmp(verb, "lo2")) lo = &tone;
+
+    if (lo != NULL && n == 2) {
+        if (!strcmp(arg, "off")) { turn_off(lo); return; }
+        if (!strcmp(arg, "on")) {
+            if (lo->power_on) {
+                printf("%s is already ON.\n", lo->name);
+            } else if (lo->has_frequency) {
+                set_frequency(lo, lo->last_mhz);
+            } else {
+                printf("No previous target for %s. Use '%s <MHz>' first.\n",
+                       lo->name, lo == &mixer ? "mixer" : "tone");
+            }
+            return;
+        }
+        double mhz;
+        if (parse_mhz(arg, &mhz) == 0) {
+            set_frequency(lo, mhz);
+            return;
+        }
+    }
+
+    /* Preserve the original interactive shorthand: a number sets mixer. */
+    if (n == 1) {
+        double mhz;
+        if (parse_mhz(verb, &mhz) == 0) {
+            set_frequency(&mixer, mhz);
+            return;
+        }
+    }
+    printf("Unrecognized command. Type 'help' for examples.\n");
+}
+
+int main(int argc, char **argv)
+{
+    double initial_mhz = 0;
+    if (argc > 2 || (argc == 2 && parse_mhz(argv[1], &initial_mhz) != 0)) {
+        fprintf(stderr, "Usage: %s [initial_mixer_MHz]\n", argv[0]);
+        return 1;
+    }
+    if (argc == 2) {
+        long steps;
+        if (frequency_steps(&mixer, initial_mhz, &steps) != 0) return 1;
+    }
+
+    if (initialize_gpio() != 0) return 1;
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
+    printf("High-Z dual oscillator controller\n");
+    printf("Mixer: %.1f-%.1f MHz, %.1f MHz steps.\n",
+           mixer.min_mhz, mixer.max_mhz, mixer.step_mhz);
+    printf("Tone:  %.1f-%.1f MHz, %.1f MHz steps (VERIFY Arduino firmware).\n",
+           tone.min_mhz, tone.max_mhz, tone.step_mhz);
 
-    /* Move to requested frequency */
-    if (set_lo_frequency(target_mhz) != 0) {
-
-        shutdown_lo();
-
+    if (argc == 2 && set_frequency(&mixer, initial_mhz) != 0) {
+        turn_off(&mixer);
+        turn_off(&tone);
+        gpioTerminate();
         return 1;
     }
 
-
-    printf("\n");
-    printf("LO power is ON.\n");
-    printf("You can now change the frequency without restarting the program.\n");
-    printf("Press Ctrl+C when completely finished.\n");
-
-
+    print_help();
+    char line[256];
     while (keep_running) {
-
-        printf("\nEnter new frequency in MHz: ");
+        printf("\nEnter command: ");
         fflush(stdout);
-
-
-        /*
-        * Read the next frequency from the user.
-        */
-        if (fgets(input, sizeof(input), stdin) == NULL) {
-
-            /*
-            * Ctrl+C may interrupt keyboard input.
-            */
-            if (!keep_running) {
-                break;
-            }
-
+        if (fgets(line, sizeof line, stdin) == NULL) {
+            if (!keep_running || feof(stdin)) break;
+            clearerr(stdin);
             continue;
         }
-
-
-        /*
-        * Convert keyboard input into a number.
-        */
-        char *new_endptr = NULL;
-
-        new_frequency = strtod(input, &new_endptr);
-
-
-        /*
-        * Make sure the user actually entered a number.
-        */
-        if (new_endptr == input) {
-
-            printf("Invalid input. Enter a frequency such as 700 or 900.\n");
-
-            continue;
-        }
-
-
-        /*
-        * Move LO to the newly requested frequency.
-        */
-        if (set_lo_frequency(new_frequency) != 0) {
-
-            printf("Frequency was not changed.\n");
-
-            continue;
-        }
-
-
-        printf("\nLO is now set to %.1f MHz.\n",
-            new_frequency);
+        run_command(line);
     }
 
-
-    printf("\nTurning LO power OFF...\n");
-
-    shutdown_lo();
-
-    printf("Done.\n");
-
+    printf("\nShutting down both oscillators...\n");
+    turn_off(&mixer);
+    turn_off(&tone);
+    gpioTerminate();
+    printf("GPIO released. Done.\n");
     return 0;
 }

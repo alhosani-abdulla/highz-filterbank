@@ -3,6 +3,7 @@
  *
  * Mixer LO: GPIO 4 (increment), 5 (reset), 6 (power)
  * Tone  LO: GPIO 13 (increment), 19 (reset), 26 (power)
+ * RF state: GPIO 20 (bit 0), 24 (bit 1), 27 (bit 2) - active LOW.
  *
  * IMPORTANT: Tone frequency values below come from highz_common.h's
  * CALIB_* settings (900-960 MHz, 0.2 MHz increments). Confirm these
@@ -13,6 +14,7 @@
  * Only one program should own/control these GPIOs at a time.
  */
 #include <errno.h>
+#include <ctype.h>
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
@@ -28,7 +30,22 @@
 #define RESET_SETTLE_US       50000
 #define POWER_SETTLE_US      100000
 
+/* Match Pins.txt and cycle_control.c; manual_state_ctrl.h erroneously has bit 0 = 21. */
+#define RF_BIT0_GPIO 20
+#define RF_BIT1_GPIO 24
+#define RF_BIT2_GPIO 27
+#define RF_SAFE_STATE 5 /* Same shutdown state used by cycle_control.c */
+
 static volatile sig_atomic_t keep_running = 1;
+
+/* The names here match continuous_acq.c's state_names array. */
+static const char *rf_names[8] = {
+    "Antenna", "Open Circuit", "Short Circuit", "Long Cable Open Circuit",
+    "Black Body", "Ambient Temperature Load", "Noise Diode", "Long Cable Short Circuit"
+};
+static const int rf_pins[3] = { RF_BIT0_GPIO, RF_BIT1_GPIO, RF_BIT2_GPIO };
+static int rf_current_state = -1;  /* Unknown until explicitly written. */
+
 
 typedef struct {
     const char *name;
@@ -218,6 +235,153 @@ fail:
     return -1;
 }
 
+/*
+ * RF box state, not a pulse protocol:
+ * Logical state bits 2:1:0 -> physical active-low GPIO levels 2:1:0.
+ * e.g. state 5 (101) -> gpio bit0=LOW, bit1=HIGH, bit2=LOW.
+ */
+static int rf_gpio_level(int state, int bit)
+{
+    return 1 - ((state >> bit) & 1);
+}
+
+static const char *rf_assertion(int level)
+{
+    return level == 0 ? "LOW (asserted)" : "HIGH (not asserted)";
+}
+
+static void print_rf_state(void)
+{
+    if (rf_current_state < 0) {
+        printf("RF box: state UNKNOWN (not initialized).\n");
+        return;
+    }
+
+    int state = rf_current_state;
+    printf("RF box: state %d (%s)\n", state, rf_names[state]);
+    printf("  Logical state bits [2 1 0]: %d %d %d\n",
+           (state >> 2) & 1, (state >> 1) & 1, state & 1);
+    for (int bit = 0; bit < 3; bit++) {
+        int expected = rf_gpio_level(state, bit);
+        int observed = gpioRead(rf_pins[bit]);
+        printf("  Bit %d / GPIO %d: commanded %s",
+               bit, rf_pins[bit], rf_assertion(expected));
+        if (observed == 0 || observed == 1) {
+            printf(" | GPIO reads %s%s", observed ? "HIGH" : "LOW",
+                   observed == expected ? "" : " (MISMATCH!)");
+        } else {
+            printf(" | GPIO read error: %d", observed);
+        }
+        printf("\n");
+    }
+}
+
+/* Print a list of names and actual GPIO levels for all 8 states. */
+static void print_rf_states(void)
+{
+    printf("\nRF states (GPIO 20 / 24 / 27, active-LOW):\n");
+    printf(" #  State name                     State bits   GPIO levels [2 1 0]\n");
+    for (int state = 0; state < 8; state++) {
+        printf(" %d  %-30s   %d%d%d          %d%d%d%s\n",
+               state, rf_names[state],
+               (state >> 2) & 1, (state >> 1) & 1, state & 1,
+               rf_gpio_level(state, 2), rf_gpio_level(state, 1),
+               rf_gpio_level(state, 0),
+               state == rf_current_state ? "  <-- current" : "");
+    }
+    printf("GPIO level 0 = active/asserted; 1 = inactive/not asserted.\n");
+}
+
+static int set_rf_state(int state)
+{
+    if (state < 0 || state > 7) {
+        fprintf(stderr, "RF state must be an integer from 0 to 7.\n");
+        return -1;
+    }
+
+    int previous = rf_current_state;
+    for (int bit = 0; bit < 3; ++bit) {
+        if (write_pin(rf_pins[bit], rf_gpio_level(state, bit)) != 0) {
+            fprintf(stderr, "RF state write failed. Actual state may be unknown.\n");
+            rf_current_state = -1;
+            return -1;
+        }
+    }
+    /* cycle_control.c allows a second for RF switch state to settle. */
+    gpioDelay(1000000);
+    rf_current_state = state;
+
+    printf("\nRF state set to %d (%s).\n", state, rf_names[state]);
+    if (previous >= 0 && previous != state) {
+        for (int bit = 0; bit < 3; bit++) {
+            int before = rf_gpio_level(previous, bit);
+            int after = rf_gpio_level(state, bit);
+            if (before != after) {
+                printf("  Bit %d: %s -> %s (GPIO %d: %s -> %s)\n",
+                       bit, before ? "OFF" : "ON", after ? "OFF" : "ON",
+                       rf_pins[bit], before ? "HIGH" : "LOW", after ? "HIGH" : "LOW");
+            }
+        }
+    }
+    print_rf_state();
+    return 0;
+}
+
+static int initialize_rf_gpio(void)
+{
+    /* Both oscillator power GPIOs are OFF when this is called. */
+    for (int bit = 0; bit < 3; bit++) {
+        if (gpioSetMode(rf_pins[bit], PI_OUTPUT) != 0) {
+            fprintf(stderr, "Cannot initialize RF box GPIO %d.\n", rf_pins[bit]);
+            return -1;
+        }
+    }
+    printf("Initializing RF box to state %d (%s).\n",
+           RF_SAFE_STATE, rf_names[RF_SAFE_STATE]);
+    return set_rf_state(RF_SAFE_STATE);
+}
+
+/* Accept state numbers, exact names, and a few convenient aliases. */
+static int parse_rf_state(const char *text, int *result)
+{
+    char key[128];
+    size_t length = 0;
+    for (; *text; ++text) {
+        unsigned char c = (unsigned char)*text;
+        if (isalnum(c)) {
+            if (length + 1 >= sizeof(key)) return -1;
+            key[length++] = (char)tolower(c);
+        } else if (!isspace(c) && c != '-' && c != '_') {
+            return -1;
+        }
+    }
+    key[length] = '\0';
+    if (length == 1 && key[0] >= '0' && key[0] <= '7') {
+        *result = key[0] - '0';
+        return 0;
+    }
+    /* Official names, simplified as lowercase letters with no spaces. */
+    static const char *normalized[8] = {
+        "antenna", "opencircuit", "shortcircuit", "longcableopencircuit",
+        "blackbody", "ambienttemperatureload", "noisediode", "longcableshortcircuit"
+    };
+    for (int state = 0; state < 8; state++) {
+        if (!strcmp(key, normalized[state])) { *result = state; return 0; }
+    }
+    static const struct { const char *alias; int state; } aliases[] = {
+        {"open", 1}, {"short", 2}, {"longopen", 3},
+        {"black", 4}, {"ambient", 5}, {"ambientload", 5},
+        {"noise", 6}, {"longshort", 7}, {"sky", 0}
+    };
+    for (size_t i = 0; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
+        if (!strcmp(key, aliases[i].alias)) {
+            *result = aliases[i].state;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 static void print_status(void)
 {
     Oscillator *los[] = {&mixer, &tone};
@@ -229,21 +393,29 @@ static void print_status(void)
         if (lo->has_frequency) printf(" | last target: %.1f MHz", lo->last_mhz);
         printf("\n");
     }
+    printf("\nRF box state (commanded GPIO, not measured RF path):\n");
+    print_rf_state();
 }
 
 static void print_help(void)
 {
     printf("\nCommands:\n"
-           "  800          Set mixer LO to 800 MHz (old behavior)\n"
            "  mixer 800    Set mixer LO to 800 MHz\n"
            "  tone 930     Set calibration/tone LO to 930 MHz\n"
            "  mixer off    Switch mixer LO OFF\n"
            "  tone off     Switch calibration/tone LO OFF\n"
            "  mixer on     Restore last mixer target after OFF\n"
            "  tone on      Restore last tone target after OFF\n"
-           "  status       Show both oscillator states\n"
+           "  rf 0         RF box state 0 (Antenna)\n"
+           "  rf ambient   RF box state 5 (Ambient Temperature Load)\n"
+           "  rf noise diode  RF box state 6 (Noise Diode)\n"
+           "  state 7      Alternate RF command; 0-7 or full names work\n"
+           "  5            Bare 0-7 also selects RF state\n"
+           "  antenna      Bare RF names also work\n"
+           "  states       List RF states, names, and GPIO levels\n"
+           "  status       Show both oscillators and RF box\n"
            "  help         Show commands\n"
-           "  quit         Power down both and exit (Ctrl+C also works)\n");
+           "  quit         Power down both, return RF to state 5, and exit\n");
 }
 
 static void run_command(const char *line)
@@ -258,6 +430,22 @@ static void run_command(const char *line)
     }
     if (n == 1 && !strcmp(verb, "help")) { print_help(); return; }
     if (n == 1 && !strcmp(verb, "status")) { print_status(); return; }
+    if (n == 1 && !strcmp(verb, "states")) { print_rf_states(); return; }
+
+    /* Read the ENTIRE remainder of the line as a name, including spaces. */
+    if (!strcmp(verb, "rf") || !strcmp(verb, "state")) {
+        const char *value = line;
+        while (isspace((unsigned char)*value)) value++;
+        while (*value && !isspace((unsigned char)*value)) value++;
+        while (isspace((unsigned char)*value)) value++;
+        int state;
+        if (parse_rf_state(value, &state) != 0) {
+            printf("Invalid RF state. Use 0-7 or a name from 'states'.\n");
+            return;
+        }
+        set_rf_state(state);
+        return;
+    }
 
     Oscillator *lo = NULL;
     if (!strcmp(verb, "mixer") || !strcmp(verb, "lo1")) lo = &mixer;
@@ -283,14 +471,15 @@ static void run_command(const char *line)
         }
     }
 
-    /* Preserve the original interactive shorthand: a number sets mixer. */
-    if (n == 1) {
-        double mhz;
-        if (parse_mhz(verb, &mhz) == 0) {
-            set_frequency(&mixer, mhz);
+    /* Bare 0-7 selects RF state, and bare full names are supported too. */
+    if (lo == NULL) {
+        int rf_state;
+        if (parse_rf_state(line, &rf_state) == 0) {
+            set_rf_state(rf_state);
             return;
         }
     }
+
     printf("Unrecognized command. Type 'help' for examples.\n");
 }
 
@@ -307,6 +496,13 @@ int main(int argc, char **argv)
     }
 
     if (initialize_gpio() != 0) return 1;
+    if (initialize_rf_gpio() != 0) {
+        fprintf(stderr, "Could not initialize RF box; powering off oscillators.\n");
+        turn_off(&mixer);
+        turn_off(&tone);
+        gpioTerminate();
+        return 1;
+    }
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
@@ -317,6 +513,7 @@ int main(int argc, char **argv)
            tone.min_mhz, tone.max_mhz, tone.step_mhz);
 
     if (argc == 2 && set_frequency(&mixer, initial_mhz) != 0) {
+        set_rf_state(RF_SAFE_STATE);
         turn_off(&mixer);
         turn_off(&tone);
         gpioTerminate();
@@ -336,6 +533,10 @@ int main(int argc, char **argv)
         run_command(line);
     }
 
+    printf("\nReturning RF box to state %d (%s)...\n",
+           RF_SAFE_STATE, rf_names[RF_SAFE_STATE]);
+    if (set_rf_state(RF_SAFE_STATE) != 0)
+        fprintf(stderr, "WARNING: Could not confirm RF box return to state 5!\n");
     printf("\nShutting down both oscillators...\n");
     turn_off(&mixer);
     turn_off(&tone);
